@@ -1,0 +1,47 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Environment and secrets
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+*-credentials.json
+service-account*.json
+
+# DeployHub runtime (local dev / testing)
+deployhub.config.json
+artifact/
+.deployhub-storage/
+.deployhub-restore/
+.deployhub-doctor-test
+
+# Test coverage
+coverage/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Editors
+.idea/
+*.swp
+*.swo
+*~
+
+# pkg cache
+.pkg-cache/
+
+LEARN.txt

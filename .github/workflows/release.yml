@@ -1,0 +1,127 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-binaries:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build pkg binaries
+        run: npm run build:bin
+
+      - name: Rename release assets
+        run: |
+          mv dist/deployhub-linux dist/deployhub-linux || true
+          mv dist/deployhub-macos dist/deployhub-macos || true
+          mv dist/deployhub-macos-arm64 dist/deployhub-macos-arm64 || true
+          mv dist/deployhub-win.exe dist/deployhub-win.exe || true
+          ls -la dist/
+
+      - name: Compute SHA256 checksums
+        id: checksums
+        run: |
+          cd dist
+          sha256sum deployhub-linux > checksums.txt
+          sha256sum deployhub-macos >> checksums.txt
+          sha256sum deployhub-macos-arm64 >> checksums.txt
+          sha256sum deployhub-win.exe >> checksums.txt
+          cat checksums.txt
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/deployhub-linux
+            dist/deployhub-macos
+            dist/deployhub-macos-arm64
+            dist/deployhub-win.exe
+            dist/checksums.txt
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Sync package version
+        run: npm version "${GITHUB_REF_NAME#v}" --no-git-tag-version --allow-same-version
+
+      - name: Publish to npm
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Update Homebrew formula
+        if: ${{ secrets.TAP_GITHUB_TOKEN }}
+        env:
+          TAP_GITHUB_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
+          VERSION: ${{ github.ref_name }}
+        run: |
+          VERSION="${VERSION#v}"
+          LINUX_SHA=$(sha256sum dist/deployhub-linux | awk '{print $1}')
+          MACOS_SHA=$(sha256sum dist/deployhub-macos | awk '{print $1}')
+          MACOS_ARM_SHA=$(sha256sum dist/deployhub-macos-arm64 | awk '{print $1}')
+
+          git clone "https://x-access-token:${TAP_GITHUB_TOKEN}@github.com/Akash-Chowdhury-24/homebrew-deployhub.git" tap
+          cd tap
+
+          cat > Formula/deployhub.rb <<'RUBY'
+class Deployhub < Formula
+  desc "Zero-configuration deployment and artifact manager"
+  homepage "https://github.com/Akash-Chowdhury-24/DeployHub"
+  version "VERSION_PLACEHOLDER"
+  license "MIT"
+
+  on_macos do
+    if Hardware::CPU.arm?
+      url "https://github.com/Akash-Chowdhury-24/DeployHub/releases/download/vVERSION_PLACEHOLDER/deployhub-macos-arm64"
+      sha256 "MACOS_ARM_SHA_PLACEHOLDER"
+    else
+      url "https://github.com/Akash-Chowdhury-24/DeployHub/releases/download/vVERSION_PLACEHOLDER/deployhub-macos"
+      sha256 "MACOS_SHA_PLACEHOLDER"
+    end
+  end
+
+  on_linux do
+    url "https://github.com/Akash-Chowdhury-24/DeployHub/releases/download/vVERSION_PLACEHOLDER/deployhub-linux"
+    sha256 "LINUX_SHA_PLACEHOLDER"
+  end
+
+  def install
+    if OS.mac? && Hardware::CPU.arm?
+      bin.install "deployhub-macos-arm64" => "deployhub"
+    elsif OS.mac?
+      bin.install "deployhub-macos" => "deployhub"
+    else
+      bin.install "deployhub-linux" => "deployhub"
+    end
+  end
+
+  test do
+    system "#{bin}/deployhub", "--version"
+  end
+end
+RUBY
+
+          sed -i "s/VERSION_PLACEHOLDER/${VERSION}/g" Formula/deployhub.rb
+          sed -i "s/LINUX_SHA_PLACEHOLDER/${LINUX_SHA}/g" Formula/deployhub.rb
+          sed -i "s/MACOS_SHA_PLACEHOLDER/${MACOS_SHA}/g" Formula/deployhub.rb
+          sed -i "s/MACOS_ARM_SHA_PLACEHOLDER/${MACOS_ARM_SHA}/g" Formula/deployhub.rb
+
+          git config user.name "DeployHub Release Bot"
+          git config user.email "release@deployhub.local"
+          git add Formula/deployhub.rb
+          git commit -m "deployhub ${VERSION}"
+          git push origin main
