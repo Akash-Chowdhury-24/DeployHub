@@ -4,6 +4,10 @@ Zero-configuration deployment and artifact manager for Node.js projects. When yo
 
 ## Installation
 
+DeployHub can be installed via **npm** (requires Node.js 18+) or as a **standalone binary** (no Node.js required).
+
+### npm (recommended for Node.js projects)
+
 ```bash
 npm install -g @akash-chowdhury-24/deployhub
 ```
@@ -12,8 +16,56 @@ Or use locally in your project:
 
 ```bash
 npm install @akash-chowdhury-24/deployhub
-npx @akash-chowdhury-24/deployhub init
+npx deployhub init
 ```
+
+### Standalone binary (Linux / macOS)
+
+Downloads the latest release from [GitHub Releases](https://github.com/Akash-Chowdhury-24/DeployHub/releases) and installs to `/usr/local/bin` (or `~/.local/bin` without sudo):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Akash-Chowdhury-24/DeployHub/main/install.sh | sh
+```
+
+Supported platforms: Linux x64, macOS x64, macOS ARM64. If the binary download fails, the script falls back to `npm install -g`.
+
+### Standalone binary (Windows)
+
+Run in PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/Akash-Chowdhury-24/DeployHub/main/install.ps1 | iex
+```
+
+Installs to `%LOCALAPPDATA%\Programs\DeployHub` and adds it to your user PATH. On Windows ARM64, the script installs via npm instead (no native binary yet).
+
+### Manual download
+
+Pick the asset for your platform from the [latest release](https://github.com/Akash-Chowdhury-24/DeployHub/releases/latest):
+
+| Platform | Asset |
+|----------|-------|
+| Linux x64 | `deployhub-linux-x64` |
+| macOS x64 | `deployhub-macos-x64` |
+| macOS ARM64 | `deployhub-macos-arm64` |
+| Windows x64 | `deployhub-win.exe` |
+
+Make it executable (Linux/macOS) and place it on your PATH:
+
+```bash
+chmod +x deployhub-linux-x64
+sudo mv deployhub-linux-x64 /usr/local/bin/deployhub
+deployhub --version
+```
+
+### Verify installation
+
+```bash
+deployhub --version
+deployhub doctor
+```
+
+To update an npm install: `deployhub update` or `npm install -g @akash-chowdhury-24/deployhub@latest`. For binary installs, re-run the install script or download the new release.
 
 ## Quick Start
 
