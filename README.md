@@ -11,7 +11,7 @@ npm install -g @akash-chowdhury-24/deployhub
 Or use locally in your project:
 
 ```bash
-npm install deployhub
+npm install @akash-chowdhury-24/deployhub
 npx @akash-chowdhury-24/deployhub init
 ```
 

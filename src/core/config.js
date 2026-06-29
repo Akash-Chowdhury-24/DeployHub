@@ -81,7 +81,7 @@ const ConfigSchema = z.object({
   artifactRetention: z.number().default(10),
   cli: z
     .object({
-      source: z.string().default('npm:deployhub'),
+      source: z.string().default('npm:@akash-chowdhury-24/deployhub'),
     })
     .default({}),
 });

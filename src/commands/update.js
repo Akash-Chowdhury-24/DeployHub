@@ -3,7 +3,7 @@ import inquirer from 'inquirer';
 import { execa } from 'execa';
 import semver from 'semver';
 
-const PACKAGE_NAME = 'deployhub';
+const PACKAGE_NAME = '@akash-chowdhury-24/deployhub';
 
 /**
  * @param {import('commander').Command} program
@@ -43,7 +43,7 @@ export function registerUpdateCommand(program) {
         {
           type: 'confirm',
           name: 'confirm',
-          message: `Install deployhub@${latest}?`,
+          message: `Install @akash-chowdhury-24/deployhub@${latest}?`,
           default: true,
         },
       ]);

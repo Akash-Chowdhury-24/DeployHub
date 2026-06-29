@@ -50,7 +50,7 @@ fetch_latest_version() {
 
   if [ -z "$VERSION" ]; then
     echo "Could not determine latest release version. Falling back to npm install." >&2
-    npm install -g deployhub@latest
+    npm install -g @akash-chowdhury-24/deployhub@latest
     echo "DeployHub installed via npm."
     exit 0
   fi
@@ -71,7 +71,7 @@ download_binary() {
   if [ ! -s "$TMP" ]; then
     echo "Binary download failed. Falling back to npm install." >&2
     rm -f "$TMP"
-    npm install -g deployhub@latest
+    npm install -g @akash-chowdhury-24/deployhub@latest
     echo "DeployHub installed via npm."
     exit 0
   fi

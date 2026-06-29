@@ -50,6 +50,6 @@ try {
 }
 catch {
     Write-Host "Binary install failed ($($_.Exception.Message)). Falling back to npm..." -ForegroundColor Yellow
-    npm install -g deployhub@latest
+    npm install -g @akash-chowdhury-24/deployhub@latest
     Write-Host "DeployHub installed via npm."
 }

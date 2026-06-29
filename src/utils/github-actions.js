@@ -32,21 +32,34 @@ const BACKEND_SSH_ENV_VARS = [
   'SSH_PORT',
 ];
 
+const NPM_PACKAGE = '@akash-chowdhury-24/deployhub';
+const DEFAULT_NPM_CLI_SOURCE = `npm:${NPM_PACKAGE}`;
+
+/** @param {string} [cliSource] */
+function normalizeCliSource(cliSource) {
+  if (!cliSource) return DEFAULT_NPM_CLI_SOURCE;
+  if (/^npm:(deployhub-cli|deploy-hub-cli|deployhub)$/.test(cliSource)) {
+    return DEFAULT_NPM_CLI_SOURCE;
+  }
+  return cliSource;
+}
+
 /**
  * @param {string} cliSource
  * @returns {string}
  */
 export function getCliInstallSpec(cliSource) {
-  if (!cliSource || cliSource === 'npm:deployhub') {
-    return 'deployhub@latest';
+  const normalized = normalizeCliSource(cliSource);
+  if (normalized === DEFAULT_NPM_CLI_SOURCE) {
+    return `${NPM_PACKAGE}@latest`;
   }
-  if (cliSource.startsWith('github:')) {
-    return cliSource;
+  if (normalized.startsWith('github:')) {
+    return normalized;
   }
-  if (cliSource.startsWith('file:')) {
-    return cliSource;
+  if (normalized.startsWith('file:')) {
+    return normalized;
   }
-  return cliSource;
+  return normalized;
 }
 
 /**
@@ -161,7 +174,7 @@ export function generateWorkflowYaml(
   storageProviders,
   deployEnvironments,
   environments,
-  cliSource = 'npm:deployhub',
+  cliSource = DEFAULT_NPM_CLI_SOURCE,
   config = null
 ) {
   /** @type {Set<string>} */
@@ -287,7 +300,7 @@ export async function writeWorkflowFile(
   deployEnvironments,
   environments,
   cwd = process.cwd(),
-  cliSource = 'npm:deployhub',
+  cliSource = DEFAULT_NPM_CLI_SOURCE,
   config = null
 ) {
   const workflowDir = path.join(cwd, '.github', 'workflows');
@@ -312,7 +325,8 @@ export async function addDeployhubToPackageJson(cliSource, cwd = process.cwd()) 
 
   const pkg = await fs.readJson(pkgPath);
   pkg.devDependencies = pkg.devDependencies || {};
-  pkg.devDependencies.deployhub = getCliInstallSpec(cliSource);
+  pkg.devDependencies[NPM_PACKAGE] = getCliInstallSpec(cliSource);
+  delete pkg.devDependencies.deployhub;
   pkg.scripts = pkg.scripts || {};
   pkg.scripts['deployhub:build'] = 'deployhub build';
   await fs.writeJson(pkgPath, pkg, { spaces: 2 });

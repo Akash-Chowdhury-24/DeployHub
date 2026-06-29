@@ -450,7 +450,7 @@ export function registerInitCommand(program) {
           type: 'input',
           name: 'cliSource',
           message:
-            'DeployHub CLI source for GitHub Actions (github:user/repo or npm:deployhub):',
+            'DeployHub CLI source for GitHub Actions (github:user/repo or npm:@akash-chowdhury-24/deployhub):',
           default: defaultCliRepo,
         },
       ]);
