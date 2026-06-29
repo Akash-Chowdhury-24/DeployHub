@@ -1,8 +1,30 @@
 {
-  "name": "deployhub",
+  "name": "deployhub-cli",
   "version": "1.0.0",
   "description": "Zero-configuration deployment and artifact manager",
   "type": "module",
+  "main": "./src/cli/index.js",
+  "license": "MIT",
+  "homepage": "https://github.com/Akash-Chowdhury-24/DeployHub#readme",
+  "bugs": {
+    "url": "https://github.com/Akash-Chowdhury-24/DeployHub/issues"
+  },
+  "keywords": [
+    "deploy",
+    "deployment",
+    "ci-cd",
+    "artifacts",
+    "cli",
+    "devops",
+    "automation"
+  ],
+  "files": [
+    "src",
+    "install.sh",
+    "install.ps1",
+    "README.md",
+    "LICENSE"
+  ],
   "bin": {
     "deployhub": "./src/cli/index.js"
   },
@@ -13,6 +35,7 @@
   "scripts": {
     "start": "node src/cli/index.js",
     "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js",
+    "prepublishOnly": "npm test",
     "build:bundle": "node scripts/build-bundle.mjs",
     "build:bin": "npm run build:bundle && pkg dist/deployhub.cjs --targets node20-linux-x64,node20-macos-x64,node20-macos-arm64,node20-win-x64 --output dist/deployhub --compress GZip"
   },

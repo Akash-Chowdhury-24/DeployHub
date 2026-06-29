@@ -15,7 +15,7 @@ service-account*.json
 
 # DeployHub runtime (local dev / testing)
 deployhub.config.json
-artifact/
+/artifact/
 .deployhub-storage/
 .deployhub-restore/
 .deployhub-doctor-test

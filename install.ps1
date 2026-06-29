@@ -4,7 +4,7 @@
 
 $ErrorActionPreference = "Stop"
 
-$GitHubRepo = "akashchowdhury/deployhub"
+$GitHubRepo = "Akash-Chowdhury-24/DeployHub"
 $BinaryName = "deployhub.exe"
 
 function Get-LatestVersion {

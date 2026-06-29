@@ -13,7 +13,7 @@ export const AUTHOR = {
 export const TOOL_NAME = 'DeployHub';
 
 /** GitHub repository slug (owner/repo) for releases and install scripts */
-export const GITHUB_REPO = 'akashchowdhury/deployhub';
+export const GITHUB_REPO = 'Akash-Chowdhury-24/DeployHub';
 
 let cachedVersion = null;
 

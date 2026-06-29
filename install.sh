@@ -5,7 +5,7 @@
 
 set -e
 
-GITHUB_REPO="akashchowdhury/deployhub"
+GITHUB_REPO="Akash-Chowdhury-24/DeployHub"
 INSTALL_DIR="/usr/local/bin"
 BINARY_NAME="deployhub"
 

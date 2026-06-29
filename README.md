@@ -5,14 +5,14 @@ Zero-configuration deployment and artifact manager for Node.js projects. When yo
 ## Installation
 
 ```bash
-npm install -g deployhub
+npm install -g deployhub-cli
 ```
 
 Or use locally in your project:
 
 ```bash
 npm install deployhub
-npx deployhub init
+npx deployhub-cli init
 ```
 
 ## Quick Start
