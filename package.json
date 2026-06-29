@@ -26,11 +26,11 @@
     "LICENSE"
   ],
   "bin": {
-    "deployhub": "./src/cli/index.js"
+    "deployhub": "src/cli/index.js"
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/Akash-Chowdhury-24/DeployHub"
+    "url": "git+https://github.com/Akash-Chowdhury-24/DeployHub.git"
   },
   "scripts": {
     "start": "node src/cli/index.js",
