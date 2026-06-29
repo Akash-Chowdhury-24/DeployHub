@@ -174,5 +174,3 @@ Built with ❤ — if DeployHub saves you time, feel free to connect on LinkedIn
 ## License
 
 MIT
-"# DeployHub" 
-"# demo-test-repo" 
