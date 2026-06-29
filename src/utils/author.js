@@ -21,12 +21,25 @@ let cachedVersion = null;
  * @returns {string}
  */
 export function getDeployHubVersion() {
-  if (!cachedVersion) {
+  if (cachedVersion) return cachedVersion;
+  try {
+    // Injected at build time by esbuild for pkg binary
+    if (typeof __DEPLOYHUB_VERSION__ !== 'undefined') {
+      cachedVersion = __DEPLOYHUB_VERSION__;
+      return cachedVersion;
+    }
+  } catch {
+    // __DEPLOYHUB_VERSION__ not defined when running from source
+  }
+  // Fallback for running from source (node src/cli/index.js)
+  try {
     const pkgPath = path.join(
       path.dirname(fileURLToPath(import.meta.url)),
       '../../package.json'
     );
     cachedVersion = JSON.parse(readFileSync(pkgPath, 'utf-8')).version;
+  } catch {
+    cachedVersion = '1.0.0';
   }
   return cachedVersion;
 }

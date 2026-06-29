@@ -37,43 +37,50 @@
     "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js",
     "prepublishOnly": "npm test",
     "build:bundle": "node scripts/build-bundle.mjs",
-    "build:bin": "npm run build:bundle && pkg dist/deployhub.cjs --targets node20-linux-x64,node20-macos-x64,node20-macos-arm64,node20-win-x64 --output dist/deployhub --compress GZip"
+    "build:binaries": "npm run build:bundle && node scripts/prefetch-pkg-cache.mjs && pkg dist/deployhub.cjs --targets node20-linux-x64,node20-macos-x64,node20-macos-arm64,node20-win-x64 --output dist/deployhub --compress GZip"
   },
   "pkg": {
     "scripts": "dist/deployhub.cjs",
-    "assets": [
-      "node_modules/ssh2/**/*"
+    "targets": [
+      "node20-linux-x64",
+      "node20-macos-x64",
+      "node20-macos-arm64",
+      "node20-win-x64"
     ],
-    "outputPath": "dist"
+    "outputPath": "dist",
+    "assets": [
+      "node_modules/ssh2/**/*",
+      ".env.example"
+    ]
   },
   "dependencies": {
-    "commander": "^12.0.0",
-    "inquirer": "^9.0.0",
-    "execa": "^8.0.0",
-    "ora": "^8.0.0",
-    "chalk": "^5.0.0",
-    "archiver": "^6.0.0",
-    "fs-extra": "^11.0.0",
-    "js-yaml": "^4.0.0",
-    "axios": "^1.0.0",
-    "zod": "^3.23.0",
     "@aws-sdk/client-s3": "^3.0.0",
     "@aws-sdk/lib-storage": "^3.0.0",
     "@azure/storage-blob": "^12.0.0",
     "@google-cloud/storage": "^7.0.0",
-    "dropbox": "^10.0.0",
-    "googleapis": "^140.0.0",
-    "ssh2": "^1.0.0",
-    "node-ssh": "^13.0.0",
-    "semver": "^7.0.0",
-    "dotenv": "^16.0.0",
+    "archiver": "^6.0.0",
+    "axios": "^1.0.0",
     "basic-ftp": "^5.0.0",
-    "nodemailer": "^6.9.0"
+    "chalk": "^5.0.0",
+    "commander": "^12.0.0",
+    "dotenv": "^16.0.0",
+    "dropbox": "^10.0.0",
+    "execa": "^8.0.0",
+    "fs-extra": "^11.0.0",
+    "googleapis": "^140.0.0",
+    "inquirer": "^9.0.0",
+    "js-yaml": "^4.0.0",
+    "node-ssh": "^13.0.0",
+    "nodemailer": "^6.9.0",
+    "ora": "^8.0.0",
+    "semver": "^7.0.0",
+    "ssh2": "^1.0.0",
+    "zod": "^3.23.0"
   },
   "devDependencies": {
-    "jest": "^29.0.0",
-    "pkg": "^5.8.1",
-    "esbuild": "^0.21.0"
+    "@yao-pkg/pkg": "^6.20.0",
+    "esbuild": "^0.21.0",
+    "jest": "^29.0.0"
   },
   "engines": {
     "node": ">=18.0.0"

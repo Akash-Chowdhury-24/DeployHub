@@ -23,22 +23,25 @@ jobs:
         run: npm ci
 
       - name: Build pkg binaries
-        run: npm run build:bin
+        run: npm run build:binaries
 
       - name: Rename release assets
         run: |
-          mv dist/deployhub-linux dist/deployhub-linux || true
-          mv dist/deployhub-macos dist/deployhub-macos || true
-          mv dist/deployhub-macos-arm64 dist/deployhub-macos-arm64 || true
-          mv dist/deployhub-win.exe dist/deployhub-win.exe || true
+          mv dist/deployhub-linux dist/deployhub-linux-x64
+          mv dist/deployhub-macos dist/deployhub-macos-x64
+          mv dist/deployhub-macos-arm64 dist/deployhub-macos-arm64
+          mv dist/deployhub-win.exe dist/deployhub-win.exe
           ls -la dist/
+
+      - name: Smoke test binary
+        run: ./dist/deployhub-linux-x64 --version
 
       - name: Compute SHA256 checksums
         id: checksums
         run: |
           cd dist
-          sha256sum deployhub-linux > checksums.txt
-          sha256sum deployhub-macos >> checksums.txt
+          sha256sum deployhub-linux-x64 > checksums.txt
+          sha256sum deployhub-macos-x64 >> checksums.txt
           sha256sum deployhub-macos-arm64 >> checksums.txt
           sha256sum deployhub-win.exe >> checksums.txt
           cat checksums.txt
@@ -47,8 +50,8 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            dist/deployhub-linux
-            dist/deployhub-macos
+            dist/deployhub-linux-x64
+            dist/deployhub-macos-x64
             dist/deployhub-macos-arm64
             dist/deployhub-win.exe
             dist/checksums.txt
@@ -64,14 +67,14 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Update Homebrew formula
-        if: ${{ secrets.TAP_GITHUB_TOKEN }}
+        if: ${{ secrets.TAP_GITHUB_TOKEN != '' }}
         env:
           TAP_GITHUB_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
           VERSION: ${{ github.ref_name }}
         run: |
           VERSION="${VERSION#v}"
-          LINUX_SHA=$(sha256sum dist/deployhub-linux | awk '{print $1}')
-          MACOS_SHA=$(sha256sum dist/deployhub-macos | awk '{print $1}')
+          LINUX_SHA=$(sha256sum dist/deployhub-linux-x64 | awk '{print $1}')
+          MACOS_SHA=$(sha256sum dist/deployhub-macos-x64 | awk '{print $1}')
           MACOS_ARM_SHA=$(sha256sum dist/deployhub-macos-arm64 | awk '{print $1}')
 
           git clone "https://x-access-token:${TAP_GITHUB_TOKEN}@github.com/Akash-Chowdhury-24/homebrew-deployhub.git" tap
@@ -89,13 +92,13 @@ class Deployhub < Formula
       url "https://github.com/Akash-Chowdhury-24/DeployHub/releases/download/vVERSION_PLACEHOLDER/deployhub-macos-arm64"
       sha256 "MACOS_ARM_SHA_PLACEHOLDER"
     else
-      url "https://github.com/Akash-Chowdhury-24/DeployHub/releases/download/vVERSION_PLACEHOLDER/deployhub-macos"
+      url "https://github.com/Akash-Chowdhury-24/DeployHub/releases/download/vVERSION_PLACEHOLDER/deployhub-macos-x64"
       sha256 "MACOS_SHA_PLACEHOLDER"
     end
   end
 
   on_linux do
-    url "https://github.com/Akash-Chowdhury-24/DeployHub/releases/download/vVERSION_PLACEHOLDER/deployhub-linux"
+    url "https://github.com/Akash-Chowdhury-24/DeployHub/releases/download/vVERSION_PLACEHOLDER/deployhub-linux-x64"
     sha256 "LINUX_SHA_PLACEHOLDER"
   end
 
@@ -103,9 +106,9 @@ class Deployhub < Formula
     if OS.mac? && Hardware::CPU.arm?
       bin.install "deployhub-macos-arm64" => "deployhub"
     elsif OS.mac?
-      bin.install "deployhub-macos" => "deployhub"
+      bin.install "deployhub-macos-x64" => "deployhub"
     else
-      bin.install "deployhub-linux" => "deployhub"
+      bin.install "deployhub-linux-x64" => "deployhub"
     end
   end
 

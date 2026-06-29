@@ -2,7 +2,6 @@ import inquirer from 'inquirer';
 import chalk from 'chalk';
 import fs from 'fs-extra';
 import path from 'path';
-import { fileURLToPath } from 'url';
 import { saveConfig } from '../core/config.js';
 import { detectFrontend, detectBackend } from '../detectors/index.js';
 import {
@@ -287,6 +286,25 @@ function buildServerEnvEntry(
   }
 
   return envEntry;
+}
+
+/**
+ * @returns {Promise<string>}
+ */
+async function getEnvExampleContent() {
+  const possiblePaths = [
+    path.join(path.dirname(process.execPath), '.env.example'),
+    path.join(process.cwd(), '.env.example'),
+    new URL('../../.env.example', import.meta.url).pathname,
+  ];
+  for (const p of possiblePaths) {
+    try {
+      return await fs.readFile(p, 'utf-8');
+    } catch {
+      // try next path
+    }
+  }
+  return '# Add your environment variables here\n';
 }
 
 /**
@@ -761,12 +779,9 @@ export function registerInitCommand(program) {
 
       await generateProjectScaffold(config, environments, cwd);
 
-      const __dirname = path.dirname(fileURLToPath(import.meta.url));
-      const envExampleSrc = path.resolve(__dirname, '../../.env.example');
       const envExampleDest = path.join(cwd, '.env.example');
-      if (await fs.pathExists(envExampleSrc)) {
-        await fs.copy(envExampleSrc, envExampleDest);
-      }
+      const envExampleContent = await getEnvExampleContent();
+      await fs.writeFile(envExampleDest, envExampleContent);
 
       const secrets = getRequiredSecrets(config.storage, deploy, environments, config);
 

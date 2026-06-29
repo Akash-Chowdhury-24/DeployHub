@@ -31,8 +31,18 @@ function Add-ToPath {
 }
 
 try {
+    $arch = $env:PROCESSOR_ARCHITECTURE
+    if ($arch -eq "ARM64") {
+        $binaryName = "deployhub-macos-arm64"  # no Windows ARM64 binary yet
+        Write-Host "Windows ARM64 detected — no native binary available yet. Installing via npm instead..."
+        npm install -g @akash-chowdhury-24/deployhub@latest
+        exit 0
+    } else {
+        $binaryName = "deployhub-win.exe"
+    }
+
     $version = Get-LatestVersion
-    $assetName = "deployhub-win.exe"
+    $assetName = $binaryName
     $url = "https://github.com/$GitHubRepo/releases/download/$version/$assetName"
     $installDir = Get-InstallDir
     $dest = Join-Path $installDir $BinaryName
