@@ -25,12 +25,13 @@ jobs:
       - name: Build pkg binaries
         run: npm run build:binaries
 
-      - name: Rename release assets
+      - name: Prepare release assets
         run: |
-          mv dist/deployhub-linux dist/deployhub-linux-x64
-          mv dist/deployhub-macos dist/deployhub-macos-x64
-          mv dist/deployhub-macos-arm64 dist/deployhub-macos-arm64
-          mv dist/deployhub-win.exe dist/deployhub-win.exe
+          ls -la dist/
+          # pkg 6.x already emits *-linux-x64 / *-macos-x64 names; normalize Windows only
+          if [ -f dist/deployhub-win-x64.exe ]; then
+            mv dist/deployhub-win-x64.exe dist/deployhub-win.exe
+          fi
           ls -la dist/
 
       - name: Smoke test binary
