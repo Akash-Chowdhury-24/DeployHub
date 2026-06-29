@@ -1,5 +1,5 @@
 {
-  "name": "deploy-hub-cli",
+  "name": "@akash-chowdhury-24/deployhub",
   "version": "1.0.0",
   "description": "Zero-configuration deployment and artifact manager",
   "type": "module",
