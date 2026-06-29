@@ -12,12 +12,19 @@ import os from 'os';
 const DOWNLOAD_TAG = 'v3.5';
 const CACHE_TAG = 'v3.6';
 const NODE_VERSION = 'v20.20.2';
+// All node20.20.2 bases on pkg-fetch v3.5 — needed for cross-compile on ubuntu-latest
 const BASES = [
+  `${NODE_VERSION}-alpine-arm64`,
+  `${NODE_VERSION}-alpine-x64`,
+  `${NODE_VERSION}-linux-arm64`,
   `${NODE_VERSION}-linux-x64`,
-  `${NODE_VERSION}-macos-x64`,
+  `${NODE_VERSION}-linuxstatic-arm64`,
+  `${NODE_VERSION}-linuxstatic-armv7`,
+  `${NODE_VERSION}-linuxstatic-x64`,
   `${NODE_VERSION}-macos-arm64`,
-  `${NODE_VERSION}-win-x64`,
+  `${NODE_VERSION}-macos-x64`,
   `${NODE_VERSION}-win-arm64`,
+  `${NODE_VERSION}-win-x64`,
 ];
 
 const cacheRoot =
@@ -49,7 +56,7 @@ async function download(name) {
   }
 
   await pipeline(response.body, createWriteStream(dest));
-  if (!name.endsWith('-win-x64')) {
+  if (!name.includes('-win-')) {
     await chmod(dest, 0o755);
   }
 }
