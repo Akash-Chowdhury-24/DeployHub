@@ -67,11 +67,15 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Update Homebrew formula
-        if: ${{ secrets.TAP_GITHUB_TOKEN != '' }}
         env:
           TAP_GITHUB_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
           VERSION: ${{ github.ref_name }}
         run: |
+          if [ -z "$TAP_GITHUB_TOKEN" ]; then
+            echo "TAP_GITHUB_TOKEN secret not set — skipping Homebrew formula update"
+            exit 0
+          fi
+
           VERSION="${VERSION#v}"
           LINUX_SHA=$(sha256sum dist/deployhub-linux-x64 | awk '{print $1}')
           MACOS_SHA=$(sha256sum dist/deployhub-macos-x64 | awk '{print $1}')
