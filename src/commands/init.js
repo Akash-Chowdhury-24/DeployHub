@@ -15,10 +15,8 @@ import {
   writeWorkflowFile,
   getRequiredSecrets,
   generateEnvExampleContent,
-  guessCliGithubRepo,
   addDeployhubToPackageJson,
-  isGithubCliSource,
-  normalizeGithubCliSource,
+  DEFAULT_NPM_CLI_SOURCE,
 } from '../utils/github-actions.js';
 import {
   promptPlatformQuestions,
@@ -365,7 +363,7 @@ export function registerInitCommand(program) {
       const detectedFrontend = detectFrontend(cwd);
       const detectedBackend = detectBackend(cwd);
       const defaultName = path.basename(cwd) || 'my-app';
-      const defaultCliRepo = await guessCliGithubRepo(cwd);
+      const cliSource = DEFAULT_NPM_CLI_SOURCE;
 
       const { projectName } = await inquirer.prompt([
         {
@@ -447,14 +445,6 @@ export function registerInitCommand(program) {
           name: 'configureDeploy',
           message: 'Configure deployment?',
           default: false,
-        },
-        {
-          type: 'input',
-          name: 'cliSource',
-          message:
-            'DeployHub CLI source for GitHub Actions (github:user/repo or npm:@akash-chowdhury-24/deployhub):',
-          default: defaultCliRepo,
-          filter: (value) => normalizeGithubCliSource(value),
         },
       ]);
 
@@ -734,7 +724,7 @@ export function registerInitCommand(program) {
         },
         artifactRetention: 10,
         cli: {
-          source: answers.cliSource,
+          source: cliSource,
         },
       };
 
@@ -752,13 +742,13 @@ export function registerInitCommand(program) {
       }
 
       await saveConfig(config, cwd);
-      await addDeployhubToPackageJson(answers.cliSource, cwd);
+      await addDeployhubToPackageJson(cliSource, cwd);
       await writeWorkflowFile(
         config.storage,
         deploy,
         environments,
         cwd,
-        answers.cliSource,
+        cliSource,
         config
       );
 
@@ -784,24 +774,13 @@ export function registerInitCommand(program) {
       console.log('  • .env.example');
       console.log('');
       console.log(chalk.bold('Next steps:'));
-      if (isGithubCliSource(answers.cliSource)) {
-        console.log(
-          '  1. For a private DeployHub CLI repo, create a GitHub PAT with repo read access'
-        );
-        console.log(
-          `     and add it as ${chalk.cyan('DEPLOYHUB_GITHUB_TOKEN')} in your demo project secrets`
-        );
-        console.log('     (public CLI repos can skip this — HTTPS is used automatically)');
-      } else {
-        console.log('  1. Push the DeployHub CLI repo to GitHub (if using github: source)');
-      }
-      console.log('  2. Copy .env.example to .env and fill in credentials');
+      console.log('  1. Copy .env.example to .env and fill in credentials');
       if (secrets.length > 0) {
-        console.log('  3. Add these secrets to GitHub (Settings → Secrets):');
+        console.log('  2. Add these secrets to GitHub (Settings → Secrets):');
         secrets.forEach((s) => console.log(`     • ${s}`));
       }
-      console.log(`  ${secrets.length > 0 ? '4' : '3'}. Run ${chalk.cyan('deployhub doctor')} to verify your setup`);
-      console.log(`  ${secrets.length > 0 ? '5' : '4'}. Push to main — GitHub Actions will run ${chalk.cyan('deployhub build')} automatically`);
+      console.log(`  ${secrets.length > 0 ? '3' : '2'}. Run ${chalk.cyan('deployhub doctor')} to verify your setup`);
+      console.log(`  ${secrets.length > 0 ? '4' : '3'}. Push to main — GitHub Actions will run ${chalk.cyan('deployhub build')} automatically`);
       console.log('');
       printAuthorFooter();
     });

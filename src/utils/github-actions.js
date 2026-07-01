@@ -60,7 +60,7 @@ const ENV_VAR_DEFAULTS = {
 };
 
 const NPM_PACKAGE = '@akash-chowdhury-24/deployhub';
-const DEFAULT_NPM_CLI_SOURCE = `npm:${NPM_PACKAGE}`;
+export const DEFAULT_NPM_CLI_SOURCE = `npm:${NPM_PACKAGE}`;
 export const GITHUB_CLI_TOKEN_SECRET = 'DEPLOYHUB_GITHUB_TOKEN';
 
 /**
