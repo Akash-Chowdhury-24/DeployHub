@@ -1,6 +1,11 @@
 import fs from 'fs-extra';
 import path from 'path';
-import { PLATFORM_ENV_MAP, PLATFORM_CLI_MAP } from './platform-env.js';
+import {
+  PLATFORM_ENV_MAP,
+  PLATFORM_CLI_MAP,
+  PLATFORM_CHOICES,
+  getPlatformEnvExample,
+} from './platform-env.js';
 import { getWorkflowHeaderComment } from './author.js';
 
 /** @typedef {'aws'|'azure'|'gcp'|'gdrive'|'dropbox'|'local'|'ftp'|'ssh'} ProviderEnvKey */
@@ -31,6 +36,28 @@ const BACKEND_SSH_ENV_VARS = [
   'SSH_APP_NAME',
   'SSH_PORT',
 ];
+
+const PROVIDER_LABELS = {
+  aws: 'AWS S3',
+  azure: 'Azure Blob',
+  gcp: 'GCP',
+  gdrive: 'Google Drive',
+  dropbox: 'Dropbox',
+  ftp: 'FTP',
+  ssh: 'SSH Deployment',
+};
+
+const PLATFORM_LABELS = Object.fromEntries(
+  PLATFORM_CHOICES.map(({ name, value }) => [value, name])
+);
+
+const ENV_VAR_DEFAULTS = {
+  AWS_REGION: 'us-east-1',
+  FTP_PORT: '21',
+  FTP_PATH: '/uploads',
+  SSH_DEPLOY_PATH: '/var/www/app',
+  SMTP_PORT: '587',
+};
 
 const NPM_PACKAGE = '@akash-chowdhury-24/deployhub';
 const DEFAULT_NPM_CLI_SOURCE = `npm:${NPM_PACKAGE}`;
@@ -398,6 +425,115 @@ export function getRequiredSecrets(
   }
 
   return Array.from(secrets);
+}
+
+/**
+ * @param {string} title
+ * @param {string[]} keys
+ * @param {Record<string, string>} [defaults]
+ * @param {Set<string>} seenKeys
+ * @returns {string}
+ */
+function formatEnvSection(title, keys, defaults, seenKeys) {
+  const newKeys = keys.filter((key) => !seenKeys.has(key));
+  if (newKeys.length === 0) return '';
+
+  for (const key of newKeys) {
+    seenKeys.add(key);
+  }
+
+  const lines = newKeys.map((key) => {
+    const value = defaults?.[key] ?? ENV_VAR_DEFAULTS[key] ?? '';
+    return value ? `${key}=${value}` : `${key}=`;
+  });
+
+  return `# ${title}\n${lines.join('\n')}\n`;
+}
+
+/**
+ * @param {string[]} storageProviders
+ * @param {string[]} deployEnvironments
+ * @param {Record<string, Record<string, unknown>>} environments
+ * @param {import('../core/config.js').DeployHubConfig} [config]
+ * @returns {string}
+ */
+export function generateEnvExampleContent(
+  storageProviders,
+  deployEnvironments,
+  environments,
+  config = null
+) {
+  /** @type {Set<string>} */
+  const seenKeys = new Set();
+  /** @type {string[]} */
+  const sections = [];
+
+  const addSection = (title, keys, defaults = {}) => {
+    const section = formatEnvSection(title, keys, defaults, seenKeys);
+    if (section) sections.push(section);
+  };
+
+  for (const provider of storageProviders) {
+    const keys = PROVIDER_ENV_MAP[provider] || [];
+    if (keys.length > 0) {
+      addSection(PROVIDER_LABELS[provider] || provider, keys);
+    }
+  }
+
+  for (const envName of deployEnvironments) {
+    const env = environments[envName];
+    if (!env) continue;
+
+    if (env.deploymentType === 'platform' || env.frontendDeploymentType === 'platform') {
+      const platform = env.platform;
+      if (platform) {
+        const examples = getPlatformEnvExample(platform);
+        addSection(
+          PLATFORM_LABELS[platform] || platform,
+          Object.keys(examples),
+          examples
+        );
+      }
+      continue;
+    }
+
+    const keys = PROVIDER_ENV_MAP[env.type] || [];
+    if (keys.length > 0) {
+      addSection(PROVIDER_LABELS[env.type] || env.type, keys);
+    }
+
+    if (env.type === 'ssh' && config) {
+      const projectType = config.projectType || 'frontend';
+      if (projectType === 'backend' || projectType === 'both') {
+        addSection('SSH Deployment (backend)', BACKEND_SSH_ENV_VARS);
+      }
+    }
+  }
+
+  if (config?.notifications) {
+    if (config.notifications.slack) {
+      addSection('Notifications', ['SLACK_WEBHOOK_URL']);
+    }
+    if (config.notifications.webhook) {
+      addSection('Notifications', ['WEBHOOK_URL']);
+    }
+    if (config.notifications.email) {
+      addSection('Email (SMTP)', [
+        'SMTP_HOST',
+        'SMTP_PORT',
+        'SMTP_USER',
+        'SMTP_PASS',
+        'NOTIFICATION_EMAIL',
+        'NOTIFY_EMAIL_TO',
+      ]);
+    }
+  }
+
+  if (sections.length === 0) {
+    return '# Add your environment variables here\n';
+  }
+
+  return `${sections.join('\n')}\n`;
 }
 
 export { PROVIDER_ENV_MAP };

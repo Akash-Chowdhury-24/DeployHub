@@ -14,6 +14,7 @@ import { getProjectVersion } from '../utils/version.js';
 import {
   writeWorkflowFile,
   getRequiredSecrets,
+  generateEnvExampleContent,
   guessCliGithubRepo,
   addDeployhubToPackageJson,
 } from '../utils/github-actions.js';
@@ -286,25 +287,6 @@ function buildServerEnvEntry(
   }
 
   return envEntry;
-}
-
-/**
- * @returns {Promise<string>}
- */
-async function getEnvExampleContent() {
-  const possiblePaths = [
-    path.join(path.dirname(process.execPath), '.env.example'),
-    path.join(process.cwd(), '.env.example'),
-    new URL('../../.env.example', import.meta.url).pathname,
-  ];
-  for (const p of possiblePaths) {
-    try {
-      return await fs.readFile(p, 'utf-8');
-    } catch {
-      // try next path
-    }
-  }
-  return '# Add your environment variables here\n';
 }
 
 /**
@@ -780,7 +762,12 @@ export function registerInitCommand(program) {
       await generateProjectScaffold(config, environments, cwd);
 
       const envExampleDest = path.join(cwd, '.env.example');
-      const envExampleContent = await getEnvExampleContent();
+      const envExampleContent = generateEnvExampleContent(
+        config.storage,
+        deploy,
+        environments,
+        config
+      );
       await fs.writeFile(envExampleDest, envExampleContent);
 
       const secrets = getRequiredSecrets(config.storage, deploy, environments, config);
