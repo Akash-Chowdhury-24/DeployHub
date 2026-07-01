@@ -10,6 +10,21 @@ import {
   checkUrlHealth,
 } from './_shared.js';
 
+const BLOCKING_AMPLIFY_JOB_STATUSES = new Set([
+  'CREATED',
+  'PENDING',
+  'PROVISIONING',
+  'RUNNING',
+  'CANCELLING',
+]);
+
+/**
+ * @param {number} ms
+ */
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 /**
  * @param {string} sourceDir
  * @param {string} zipPath
@@ -103,6 +118,102 @@ export function createAwsAmplifyProvider(config, envName, env = process.env) {
     log.success(`Amplify branch "${branch}" ready`);
   }
 
+  /**
+   * @param {Record<string, string>} awsEnv
+   * @returns {Promise<{ jobId?: string, status?: string }[]>}
+   */
+  async function listBranchJobs(awsEnv) {
+    const result = await runCli(
+      `aws amplify list-jobs --app-id ${appId} --branch-name ${branch} --max-items 10 --output json`,
+      process.cwd(),
+      awsEnv
+    );
+    if (result.exitCode !== 0) return [];
+
+    try {
+      const data = JSON.parse(result.stdout);
+      return data.jobSummaries || [];
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * Cancel stuck jobs left by failed uploads so create-deployment can proceed.
+   * @param {Record<string, string>} awsEnv
+   */
+  async function clearBlockingAmplifyJobs(awsEnv) {
+    const jobs = await listBranchJobs(awsEnv);
+    const blocking = jobs.filter((job) =>
+      BLOCKING_AMPLIFY_JOB_STATUSES.has(job.status || '')
+    );
+
+    if (blocking.length === 0) return;
+
+    for (const job of blocking) {
+      log.info(`Stopping in-progress Amplify job ${job.jobId} (${job.status})...`);
+      const stopResult = await runCli(
+        `aws amplify stop-job --app-id ${appId} --branch-name ${branch} --job-id ${job.jobId}`,
+        process.cwd(),
+        awsEnv
+      );
+      if (stopResult.exitCode !== 0) {
+        log.warn(
+          `Could not stop Amplify job ${job.jobId}: ${stopResult.stderr || stopResult.stdout}`
+        );
+      }
+    }
+
+    for (let attempt = 0; attempt < 12; attempt += 1) {
+      await sleep(5000);
+      const current = await listBranchJobs(awsEnv);
+      const stillBlocking = current.filter((job) =>
+        BLOCKING_AMPLIFY_JOB_STATUSES.has(job.status || '')
+      );
+      if (stillBlocking.length === 0) {
+        log.info('Amplify branch is ready for a new deployment');
+        return;
+      }
+    }
+
+    throw new Error(
+      'Timed out waiting for in-progress Amplify jobs to finish. Stop them in the AWS console and retry.'
+    );
+  }
+
+  /**
+   * @param {Record<string, string>} awsEnv
+   * @returns {Promise<Record<string, unknown>>}
+   */
+  async function createManualDeployment(awsEnv) {
+    await clearBlockingAmplifyJobs(awsEnv);
+
+    const createResult = await runCli(
+      `aws amplify create-deployment --app-id ${appId} --branch-name ${branch} --output json`,
+      process.cwd(),
+      awsEnv
+    );
+    if (createResult.exitCode !== 0) {
+      const errorText = `${createResult.stderr || ''}${createResult.stdout || ''}`;
+      if (/was not finished/i.test(errorText)) {
+        log.warn('Amplify has a stuck deployment — clearing it and retrying...');
+        await clearBlockingAmplifyJobs(awsEnv);
+        const retryResult = await runCli(
+          `aws amplify create-deployment --app-id ${appId} --branch-name ${branch} --output json`,
+          process.cwd(),
+          awsEnv
+        );
+        if (retryResult.exitCode !== 0) {
+          throw new Error(`Amplify create-deployment failed: ${retryResult.stderr}`);
+        }
+        return JSON.parse(retryResult.stdout);
+      }
+      throw new Error(`Amplify create-deployment failed: ${createResult.stderr}`);
+    }
+
+    return JSON.parse(createResult.stdout);
+  }
+
   async function deploy(artifactDir) {
     if (!appId) throw new Error('AMPLIFY_APP_ID is required');
 
@@ -152,16 +263,7 @@ export function createAwsAmplifyProvider(config, envName, env = process.env) {
     const amplifyZipPath = path.join(artifactDir, 'amplify-deploy.zip');
     await createRootZip(buildDir, amplifyZipPath);
 
-    const createResult = await runCli(
-      `aws amplify create-deployment --app-id ${appId} --branch-name ${branch} --output json`,
-      process.cwd(),
-      awsEnv
-    );
-    if (createResult.exitCode !== 0) {
-      throw new Error(`Amplify create-deployment failed: ${createResult.stderr}`);
-    }
-
-    const deployment = JSON.parse(createResult.stdout);
+    const deployment = await createManualDeployment(awsEnv);
     const jobId = deployment.jobId;
     const zipUploadUrl = deployment.zipUploadUrl;
 
