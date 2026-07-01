@@ -17,6 +17,8 @@ import {
   generateEnvExampleContent,
   guessCliGithubRepo,
   addDeployhubToPackageJson,
+  isGithubCliSource,
+  normalizeGithubCliSource,
 } from '../utils/github-actions.js';
 import {
   promptPlatformQuestions,
@@ -452,6 +454,7 @@ export function registerInitCommand(program) {
           message:
             'DeployHub CLI source for GitHub Actions (github:user/repo or npm:@akash-chowdhury-24/deployhub):',
           default: defaultCliRepo,
+          filter: (value) => normalizeGithubCliSource(value),
         },
       ]);
 
@@ -781,7 +784,17 @@ export function registerInitCommand(program) {
       console.log('  • .env.example');
       console.log('');
       console.log(chalk.bold('Next steps:'));
-      console.log('  1. Push the DeployHub CLI repo to GitHub (if using github: source)');
+      if (isGithubCliSource(answers.cliSource)) {
+        console.log(
+          '  1. For a private DeployHub CLI repo, create a GitHub PAT with repo read access'
+        );
+        console.log(
+          `     and add it as ${chalk.cyan('DEPLOYHUB_GITHUB_TOKEN')} in your demo project secrets`
+        );
+        console.log('     (public CLI repos can skip this — HTTPS is used automatically)');
+      } else {
+        console.log('  1. Push the DeployHub CLI repo to GitHub (if using github: source)');
+      }
       console.log('  2. Copy .env.example to .env and fill in credentials');
       if (secrets.length > 0) {
         console.log('  3. Add these secrets to GitHub (Settings → Secrets):');

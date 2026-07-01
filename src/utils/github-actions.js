@@ -61,6 +61,44 @@ const ENV_VAR_DEFAULTS = {
 
 const NPM_PACKAGE = '@akash-chowdhury-24/deployhub';
 const DEFAULT_NPM_CLI_SOURCE = `npm:${NPM_PACKAGE}`;
+export const GITHUB_CLI_TOKEN_SECRET = 'DEPLOYHUB_GITHUB_TOKEN';
+
+/**
+ * @param {string} [cliSource]
+ * @returns {boolean}
+ */
+export function isGithubCliSource(cliSource) {
+  const normalized = normalizeCliSource(cliSource);
+  return normalized.startsWith('github:');
+}
+
+/**
+ * Normalizes common GitHub remote formats to github:user/repo.
+ * @param {string} cliSource
+ * @returns {string}
+ */
+export function normalizeGithubCliSource(cliSource) {
+  if (!cliSource) return cliSource;
+
+  const trimmed = cliSource.trim();
+  const httpsMatch = trimmed.match(
+    /^https?:\/\/github\.com\/([^/]+)\/([^/#?]+?)(?:\.git)?(?:[/?#].*)?$/
+  );
+  if (httpsMatch) {
+    return `github:${httpsMatch[1]}/${httpsMatch[2]}`;
+  }
+
+  const sshMatch = trimmed.match(/^git@github\.com:([^/]+)\/([^/#?]+?)(?:\.git)?$/);
+  if (sshMatch) {
+    return `github:${sshMatch[1]}/${sshMatch[2]}`;
+  }
+
+  if (trimmed.startsWith('github:')) {
+    return trimmed.replace(/^github:/, 'github:').replace(/\.git$/, '');
+  }
+
+  return trimmed;
+}
 
 /** @param {string} [cliSource] */
 function normalizeCliSource(cliSource) {
@@ -68,7 +106,7 @@ function normalizeCliSource(cliSource) {
   if (/^npm:(deployhub-cli|deploy-hub-cli|deployhub)$/.test(cliSource)) {
     return DEFAULT_NPM_CLI_SOURCE;
   }
-  return cliSource;
+  return normalizeGithubCliSource(cliSource);
 }
 
 /**
@@ -87,6 +125,26 @@ export function getCliInstallSpec(cliSource) {
     return normalized;
   }
   return normalized;
+}
+
+/**
+ * @returns {string}
+ */
+function getGithubGitConfigStep() {
+  return `      - name: Configure GitHub access for DeployHub CLI
+        env:
+          ${GITHUB_CLI_TOKEN_SECRET}: \${{ secrets.${GITHUB_CLI_TOKEN_SECRET} }}
+          GITHUB_TOKEN: \${{ github.token }}
+        run: |
+          TOKEN="\${${GITHUB_CLI_TOKEN_SECRET}:-$GITHUB_TOKEN}"
+          if [ -n "$TOKEN" ]; then
+            git config --global url."https://oauth2:\${TOKEN}@github.com/".insteadOf "https://github.com/"
+            git config --global url."https://oauth2:\${TOKEN}@github.com/".insteadOf "git@github.com:"
+            git config --global url."https://oauth2:\${TOKEN}@github.com/".insteadOf "ssh://git@github.com/"
+          else
+            git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
+            git config --global url."https://github.com/".insteadOf "git@github.com:"
+          fi`;
 }
 
 /**
@@ -246,6 +304,9 @@ export function generateWorkflowYaml(
   const installSpec = getCliInstallSpec(cliSource);
   const backendSteps = getBackendSetupSteps(config);
   const uniqueBackendSteps = [...new Set(backendSteps)].join('\n');
+  const githubGitConfigStep = isGithubCliSource(cliSource)
+    ? `${getGithubGitConfigStep()}\n`
+    : '';
 
   const envList = deployEnvironments
     .map((name) => environments[name])
@@ -270,7 +331,7 @@ jobs:
 ${uniqueBackendSteps ? `${uniqueBackendSteps}\n` : ''}      - uses: actions/setup-node@v4
         with:
           node-version: '20'
-      - name: Install project dependencies
+${githubGitConfigStep}      - name: Install project dependencies
         run: ${installDepsCommand}
 ${platformSteps ? `${platformSteps}\n` : ''}      - name: Install DeployHub CLI
         run: npm install ${installSpec} --no-save
@@ -391,10 +452,16 @@ export function getRequiredSecrets(
   storageProviders,
   deployEnvironments,
   environments,
-  config = null
+  config = null,
+  cliSource = null
 ) {
   /** @type {Set<string>} */
   const secrets = new Set();
+
+  const resolvedCliSource = cliSource || config?.cli?.source;
+  if (isGithubCliSource(resolvedCliSource)) {
+    secrets.add(GITHUB_CLI_TOKEN_SECRET);
+  }
 
   for (const provider of storageProviders) {
     const keys = PROVIDER_ENV_MAP[provider] || [];
