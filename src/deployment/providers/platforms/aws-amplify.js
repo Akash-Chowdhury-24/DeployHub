@@ -1,7 +1,6 @@
 import path from 'path';
 import fs from 'fs-extra';
 import archiver from 'archiver';
-import axios from 'axios';
 import { createLogger } from '../../../logger/index.js';
 import {
   runCli,
@@ -49,11 +48,18 @@ async function createRootZip(sourceDir, zipPath) {
  * @param {string} uploadUrl
  */
 async function uploadZipToAmplify(zipPath, uploadUrl) {
-  await axios.put(uploadUrl, fs.createReadStream(zipPath), {
-    headers: { 'Content-Type': 'application/zip' },
-    maxBodyLength: Infinity,
-    maxContentLength: Infinity,
+  const body = await fs.readFile(zipPath);
+  const response = await fetch(uploadUrl, {
+    method: 'PUT',
+    body,
   });
+
+  if (!response.ok) {
+    const detail = await response.text().catch(() => '');
+    throw new Error(
+      `Amplify zip upload failed: HTTP ${response.status}${detail ? ` — ${detail}` : ''}`
+    );
+  }
 }
 
 /**
