@@ -1,7 +1,7 @@
 import path from 'path';
 import fs from 'fs-extra';
 import archiver from 'archiver';
-import { execa } from 'execa';
+import axios from 'axios';
 import { createLogger } from '../../../logger/index.js';
 import {
   runCli,
@@ -26,6 +26,18 @@ async function createRootZip(sourceDir, zipPath) {
     archive.pipe(output);
     archive.directory(sourceDir, false);
     archive.finalize();
+  });
+}
+
+/**
+ * @param {string} zipPath
+ * @param {string} uploadUrl
+ */
+async function uploadZipToAmplify(zipPath, uploadUrl) {
+  await axios.put(uploadUrl, fs.createReadStream(zipPath), {
+    headers: { 'Content-Type': 'application/zip' },
+    maxBodyLength: Infinity,
+    maxContentLength: Infinity,
   });
 }
 
@@ -153,11 +165,8 @@ export function createAwsAmplifyProvider(config, envName, env = process.env) {
     const jobId = deployment.jobId;
     const zipUploadUrl = deployment.zipUploadUrl;
 
-    await execa('curl', ['-T', amplifyZipPath, zipUploadUrl], {
-      env: { ...process.env, ...awsEnv },
-      stdio: 'inherit',
-      shell: true,
-    });
+    log.info('Uploading zip to Amplify...');
+    await uploadZipToAmplify(amplifyZipPath, zipUploadUrl);
 
     const startResult = await runCli(
       `aws amplify start-deployment --app-id ${appId} --branch-name ${branch} --job-id ${jobId}`,
