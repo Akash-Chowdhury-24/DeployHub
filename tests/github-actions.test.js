@@ -53,7 +53,9 @@ describe('github cli source', () => {
       'github:Akash-Chowdhury-24/demo-test-repo-'
     );
 
-    expect(yaml).toContain('npx --no-install @akash-chowdhury-24/deployhub build');
+    expect(yaml).toContain(
+      'node ./node_modules/@akash-chowdhury-24/deployhub/src/cli/index.js build'
+    );
     expect(yaml).not.toContain('npx deployhub build');
   });
 

@@ -128,11 +128,12 @@ export function getCliInstallSpec(cliSource) {
 }
 
 /**
- * npm/npx command to run deployhub build using the installed scoped package.
+ * Shell command to run deployhub build from the installed scoped package.
+ * Uses node directly so it works reliably when installed from a private GitHub repo.
  * @returns {string}
  */
 export function getCliBuildCommand() {
-  return `npx --no-install ${NPM_PACKAGE} build`;
+  return `node ./node_modules/${NPM_PACKAGE}/src/cli/index.js build`;
 }
 
 /**
