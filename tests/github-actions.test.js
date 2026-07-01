@@ -45,6 +45,18 @@ describe('github cli source', () => {
     expect(yaml).not.toContain('Configure GitHub access for DeployHub CLI');
   });
 
+  test('workflow runs deployhub via scoped package name', () => {
+    const yaml = generateWorkflowYaml(
+      ['aws'],
+      [],
+      {},
+      'github:Akash-Chowdhury-24/demo-test-repo-'
+    );
+
+    expect(yaml).toContain('npx --no-install @akash-chowdhury-24/deployhub build');
+    expect(yaml).not.toContain('npx deployhub build');
+  });
+
   test('getRequiredSecrets includes DEPLOYHUB_GITHUB_TOKEN for github cli', () => {
     const secrets = getRequiredSecrets(
       ['aws'],

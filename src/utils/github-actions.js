@@ -128,6 +128,14 @@ export function getCliInstallSpec(cliSource) {
 }
 
 /**
+ * npm/npx command to run deployhub build using the installed scoped package.
+ * @returns {string}
+ */
+export function getCliBuildCommand() {
+  return `npx --no-install ${NPM_PACKAGE} build`;
+}
+
+/**
  * @returns {string}
  */
 function getGithubGitConfigStep() {
@@ -335,7 +343,7 @@ ${githubGitConfigStep}      - name: Install project dependencies
         run: ${installDepsCommand}
 ${platformSteps ? `${platformSteps}\n` : ''}      - name: Install DeployHub CLI
         run: npm install ${installSpec} --no-save
-      - run: npx deployhub build
+      - run: ${getCliBuildCommand()}
         env:
 ${envBlock}
 `;
