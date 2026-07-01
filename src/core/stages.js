@@ -5,8 +5,6 @@ import { uploadToAll } from '../storage/index.js';
 import { deployToAll } from '../deployment/index.js';
 import { sendNotifications } from '../notifications/index.js';
 import axios from 'axios';
-import fs from 'fs-extra';
-import path from 'path';
 import { getProjectVersion } from '../utils/version.js';
 
 /**
@@ -148,15 +146,6 @@ export function buildPipelineStages(config, cwd, state) {
         if (!artifactDir) throw new Error('No artifact to deploy');
         const deployed = await deployToAll(ctx.config, artifactDir);
         ctx.state.deployedTargets = deployed;
-
-        const deploymentPath = path.join(artifactDir, 'deployment.json');
-        if (await fs.pathExists(deploymentPath)) {
-          const data = await fs.readJson(deploymentPath);
-          const last = data.lastDeployment;
-          if (last?.deployUrl || last?.deploymentUrl) {
-            ctx.state.lastDeployUrl = last.deployUrl || last.deploymentUrl;
-          }
-        }
 
         await repackArtifactZip(artifactDir);
         const zipPath = /** @type {string} */ (ctx.state.zipPath);

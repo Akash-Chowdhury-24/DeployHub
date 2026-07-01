@@ -7,9 +7,6 @@ import { loadConfig, loadEnv } from '../core/config.js';
 import { testProvider } from '../storage/index.js';
 import { getDeploymentProvider } from '../deployment/index.js';
 import { PROVIDER_ENV_MAP } from '../utils/github-actions.js';
-import { PLATFORM_ENV_MAP, PLATFORM_CLI_MAP } from '../utils/platform-env.js';
-import { createPlatformProvider } from '../deployment/providers/platforms/index.js';
-import { isCliInstalled } from '../deployment/providers/platforms/_shared.js';
 import { printDoctorFooter } from '../utils/author.js';
 import { createLocalProvider } from '../storage/providers/local.js';
 
@@ -158,132 +155,6 @@ async function runBackendProcessChecks(config, envName) {
         return { name: 'Java', pass: false, message: 'Java not found on server' };
       })
     );
-  }
-
-  return checks;
-}
-
-/**
- * @param {import('../core/config.js').DeployHubConfig} config
- * @param {string} envName
- * @param {string} [cwd]
- * @returns {Promise<CheckResult[]>}
- */
-async function runPlatformChecks(config, envName, cwd = process.cwd()) {
-  const env = config.environments[envName];
-  const platform = env?.platform;
-  if (!platform) return [];
-
-  const cli = PLATFORM_CLI_MAP[platform];
-  const envKeys = PLATFORM_ENV_MAP[platform] || [];
-  /** @type {CheckResult[]} */
-  const checks = [];
-
-  if (cli?.binary) {
-    const cliLabel = cli.binary.charAt(0).toUpperCase() + cli.binary.slice(1);
-    checks.push(
-      await runCheck(`${cliLabel} CLI`, async () => {
-        const installed = await isCliInstalled(cli.binary);
-        if (installed) {
-          return { name: `${cliLabel} CLI`, pass: true, message: `${cli.binary} CLI installed` };
-        }
-        return {
-          name: `${cliLabel} CLI`,
-          pass: false,
-          message: `not found — run: ${cli.globalInstall || `npm install -g ${cli.install}`}`,
-        };
-      })
-    );
-  }
-
-  for (const key of envKeys) {
-    const isToken = key.includes('TOKEN') || key.includes('KEY');
-    checks.push(
-      await runCheck(key, async () => {
-        if (!process.env[key]) {
-          return { name: key, pass: false, message: 'not set in .env' };
-        }
-        if (isToken && key === envKeys[0]) {
-          try {
-            const provider = createPlatformProvider(platform, config, envName);
-            if (provider.testConnection) {
-              await provider.testConnection();
-              return { name: key, pass: true, message: 'token valid' };
-            }
-          } catch (err) {
-            return {
-              name: key,
-              pass: false,
-              message: err instanceof Error ? err.message : 'token invalid',
-            };
-          }
-        }
-        return { name: key, pass: true, message: 'present' };
-      })
-    );
-  }
-
-  if (platform === 'vercel') {
-    checks.push(
-      await runCheck('Vercel project link', async () => {
-        const vercelJson = path.join(cwd, '.vercel', 'project.json');
-        if (await fs.pathExists(vercelJson)) {
-          return { name: 'Vercel project link', pass: true, message: '.vercel/project.json found' };
-        }
-        return {
-          name: 'Vercel project link',
-          pass: false,
-          message: 'not found — run: vercel link',
-        };
-      })
-    );
-  }
-
-  if (platform === 'firebase-hosting') {
-    checks.push(
-      await runCheck('firebase.json', async () => {
-        if (await fs.pathExists(path.join(cwd, 'firebase.json'))) {
-          return { name: 'firebase.json', pass: true, message: 'found' };
-        }
-        return {
-          name: 'firebase.json',
-          pass: false,
-          message: 'missing — run deployhub init or create manually',
-        };
-      })
-    );
-  }
-
-  try {
-    const provider = createPlatformProvider(platform, config, envName);
-    if (provider.testConnection && envKeys.every((k) => process.env[k])) {
-      checks.push(
-        await runCheck(`${platform} connection`, async () => {
-          await provider.testConnection();
-          if (platform === 'netlify') {
-            return { name: 'NETLIFY_SITE_ID', pass: true, message: 'site found' };
-          }
-          if (platform === 'cloudflare-pages') {
-            return { name: 'CF project', pass: true, message: 'project exists' };
-          }
-          if (platform === 'aws-amplify') {
-            return { name: 'AMPLIFY_APP_ID', pass: true, message: 'app found in AWS' };
-          }
-          if (platform.startsWith('firebase')) {
-            return { name: 'Firebase project', pass: true, message: 'project ID valid' };
-          }
-          return { name: `${platform} connection`, pass: true, message: 'connected' };
-        })
-      );
-    }
-  } catch (err) {
-    if (envKeys.every((k) => process.env[k])) {
-      checks.push({
-        name: `${platform} connection`,
-        pass: false,
-        message: err instanceof Error ? err.message : String(err),
-      });
-    }
   }
 
   return checks;
@@ -467,11 +338,6 @@ export function registerDoctorCommand(program) {
           const env = config.environments[envName];
           if (!env) continue;
 
-          if (env.deploymentType === 'platform' || env.frontendDeploymentType === 'platform') {
-            const platformChecks = await runPlatformChecks(config, envName, cwd);
-            results.push(...platformChecks);
-          }
-
           if (env.type && ['ssh', 'ec2', 'azure-vm', 'gcp-vm'].includes(env.type)) {
             results.push(
               await runCheck('SSH target', async () => {
@@ -541,13 +407,7 @@ export function registerDoctorCommand(program) {
             const env = config.environments[envName];
             if (!env) continue;
 
-            if (env.deploymentType === 'platform' || env.frontendDeploymentType === 'platform') {
-              const platform = env.platform;
-              if (platform) {
-                const keys = PLATFORM_ENV_MAP[platform] || [];
-                required.push(...keys);
-              }
-            } else if (env.type) {
+            if (env.type) {
               const keys = PROVIDER_ENV_MAP[env.type] || [];
               required.push(...keys);
             }

@@ -1,11 +1,5 @@
 import fs from 'fs-extra';
 import path from 'path';
-import {
-  PLATFORM_ENV_MAP,
-  PLATFORM_CLI_MAP,
-  PLATFORM_CHOICES,
-  getPlatformEnvExample,
-} from './platform-env.js';
 import { getWorkflowHeaderComment } from './author.js';
 
 /** @typedef {'aws'|'azure'|'gcp'|'gdrive'|'dropbox'|'local'|'ftp'|'ssh'} ProviderEnvKey */
@@ -46,10 +40,6 @@ const PROVIDER_LABELS = {
   ftp: 'FTP',
   ssh: 'SSH Deployment',
 };
-
-const PLATFORM_LABELS = Object.fromEntries(
-  PLATFORM_CHOICES.map(({ name, value }) => [value, name])
-);
 
 const ENV_VAR_DEFAULTS = {
   AWS_REGION: 'us-east-1',
@@ -209,54 +199,6 @@ function getBackendSetupSteps(config) {
 }
 
 /**
- * @param {Record<string, unknown>[]} environments
- * @returns {string[]}
- */
-function getPlatformInstallSteps(environments) {
-  /** @type {Set<string>} */
-  const steps = new Set();
-
-  for (const env of environments) {
-    if (env.deploymentType !== 'platform' && env.frontendDeploymentType !== 'platform') {
-      continue;
-    }
-    const platform = env.platform;
-    if (!platform) continue;
-    const cli = PLATFORM_CLI_MAP[platform];
-    if (cli?.globalInstall) {
-      steps.add(`      - name: Install ${platform} CLI\n        run: ${cli.globalInstall}`);
-    }
-  }
-
-  return Array.from(steps);
-}
-
-/**
- * @param {string[]} deployEnvironments
- * @param {Record<string, Record<string, unknown>>} environments
- */
-function collectPlatformEnvVars(deployEnvironments, environments) {
-  /** @type {Set<string>} */
-  const envVars = new Set();
-
-  for (const envName of deployEnvironments) {
-    const env = environments[envName];
-    if (!env) continue;
-
-    if (env.deploymentType === 'platform' || env.frontendDeploymentType === 'platform') {
-      const platform = env.platform;
-      if (!platform) continue;
-      const keys = PLATFORM_ENV_MAP[platform] || [];
-      for (const key of keys) {
-        envVars.add(`${key}: \${{ secrets.${key} }}`);
-      }
-    }
-  }
-
-  return envVars;
-}
-
-/**
  * @param {string[]} storageProviders
  * @param {string[]} deployEnvironments
  * @param {Record<string, { type: string }>} environments
@@ -285,11 +227,9 @@ export function generateWorkflowYaml(
     const env = environments[envName];
     if (!env) continue;
 
-    if (env.deploymentType !== 'platform') {
-      const keys = PROVIDER_ENV_MAP[env.type] || [];
-      for (const key of keys) {
-        envVars.add(`${key}: \${{ secrets.${key} }}`);
-      }
+    const keys = PROVIDER_ENV_MAP[env.type] || [];
+    for (const key of keys) {
+      envVars.add(`${key}: \${{ secrets.${key} }}`);
     }
 
     if (env.type === 'ssh' && config) {
@@ -302,10 +242,6 @@ export function generateWorkflowYaml(
     }
   }
 
-  for (const line of collectPlatformEnvVars(deployEnvironments, environments)) {
-    envVars.add(line);
-  }
-
   const envBlock = Array.from(envVars)
     .map((line) => `          ${line}`)
     .join('\n');
@@ -316,11 +252,6 @@ export function generateWorkflowYaml(
   const githubGitConfigStep = isGithubCliSource(cliSource)
     ? `${getGithubGitConfigStep()}\n`
     : '';
-
-  const envList = deployEnvironments
-    .map((name) => environments[name])
-    .filter(Boolean);
-  const platformSteps = getPlatformInstallSteps(envList).join('\n');
 
   const projectType = config?.projectType || 'frontend';
   const installDepsCommand =
@@ -342,7 +273,7 @@ ${uniqueBackendSteps ? `${uniqueBackendSteps}\n` : ''}      - uses: actions/setu
           node-version: '20'
 ${githubGitConfigStep}      - name: Install project dependencies
         run: ${installDepsCommand}
-${platformSteps ? `${platformSteps}\n` : ''}      - name: Install DeployHub CLI
+      - name: Install DeployHub CLI
         run: npm install ${installSpec} --no-save
       - run: ${getCliBuildCommand()}
         env:
@@ -481,16 +412,8 @@ export function getRequiredSecrets(
     const env = environments[envName];
     if (!env) continue;
 
-    if (env.deploymentType === 'platform' || env.frontendDeploymentType === 'platform') {
-      const platform = env.platform;
-      if (platform) {
-        const keys = PLATFORM_ENV_MAP[platform] || [];
-        keys.forEach((k) => secrets.add(k));
-      }
-    } else {
-      const keys = PROVIDER_ENV_MAP[env.type] || [];
-      keys.forEach((k) => secrets.add(k));
-    }
+    const keys = PROVIDER_ENV_MAP[env.type] || [];
+    keys.forEach((k) => secrets.add(k));
 
     if (env.type === 'ssh' && config) {
       const projectType = config.projectType || 'frontend';
@@ -559,19 +482,6 @@ export function generateEnvExampleContent(
   for (const envName of deployEnvironments) {
     const env = environments[envName];
     if (!env) continue;
-
-    if (env.deploymentType === 'platform' || env.frontendDeploymentType === 'platform') {
-      const platform = env.platform;
-      if (platform) {
-        const examples = getPlatformEnvExample(platform);
-        addSection(
-          PLATFORM_LABELS[platform] || platform,
-          Object.keys(examples),
-          examples
-        );
-      }
-      continue;
-    }
 
     const keys = PROVIDER_ENV_MAP[env.type] || [];
     if (keys.length > 0) {

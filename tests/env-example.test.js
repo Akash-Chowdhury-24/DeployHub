@@ -12,21 +12,21 @@ describe('generateEnvExampleContent', () => {
     expect(content).toContain('GDRIVE_FOLDER_ID=');
   });
 
-  test('includes platform deployment variables', () => {
+  test('includes server deployment variables', () => {
     const content = generateEnvExampleContent(
       [],
       ['production'],
       {
         production: {
-          deploymentType: 'platform',
-          platform: 'vercel',
+          deploymentType: 'server',
+          type: 'ssh',
         },
       }
     );
 
-    expect(content).toContain('# Vercel');
-    expect(content).toContain('VERCEL_TOKEN=');
-    expect(content).toContain('VERCEL_PROJECT_ID=');
+    expect(content).toContain('# SSH Deployment');
+    expect(content).toContain('SSH_HOST=');
+    expect(content).toContain('SSH_KEY=');
   });
 
   test('returns placeholder when no providers are configured', () => {

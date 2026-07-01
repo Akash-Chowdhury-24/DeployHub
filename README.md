@@ -2,6 +2,10 @@
 
 Zero-configuration deployment and artifact manager for Node.js projects. When you push to GitHub, DeployHub automatically detects your project type, builds it, creates a versioned artifact, uploads to cloud storage, and optionally deploys to your server.
 
+**Supported deployment targets:** SSH, Docker, EC2, Azure VM, GCP VM, and Kubernetes — self-hosted and cloud VM only.
+
+DeployHub no longer integrates with managed platforms like Vercel or Netlify — those tools already offer superior native git-push deployment. DeployHub instead focuses on artifact-first backups and self-hosted/server deployment, where no equivalent native solution exists.
+
 ## Installation
 
 DeployHub can be installed via **npm** (requires Node.js 18+) or as a **standalone binary** (no Node.js required).
@@ -80,7 +84,7 @@ This interactive wizard will:
 - Detect your framework (React, Vue, Next.js, Node, Python, etc.)
 - Configure build commands and output directory
 - Set up storage providers (AWS, Google Drive, Azure, GCP, Dropbox, Local)
-- Optionally configure deployment targets (SSH, Docker, EC2, Kubernetes, etc.)
+- Optionally configure deployment targets (SSH, Docker, EC2, Azure VM, GCP VM, Kubernetes)
 - Generate `deployhub.config.json`
 - Generate `.github/workflows/deployhub.yml`
 - Generate `.env.example`
@@ -132,7 +136,7 @@ When you run `deployhub build` (locally or in GitHub Actions), DeployHub runs th
 | **verify** | Hit your health-check URL — **only if configured** |
 | **notify** | Slack / email / webhook — **only if enabled** |
 
-**Storage only** means you answer **No** to *Configure deployment?* during `init`. You still get builds and cloud backups; nothing is pushed to a server or platform.
+**Storage only** means you answer **No** to *Configure deployment?* during `init`. You still get builds and cloud backups; nothing is pushed to a server.
 
 **Storage + deployment** means you answer **Yes**, pick targets, and add the matching secrets. Deploy always runs **after** storage upload succeeds.
 
@@ -181,7 +185,6 @@ The wizard asks the same core questions for every setup:
 - `.github/workflows/deployhub.yml` — CI pipeline
 - `.env.example` — list of env vars you may need
 - `nginx.conf` — auto-generated if frontend deploys to SSH
-- `firebase.json` — auto-generated if you pick Firebase Hosting
 
 ---
 
@@ -301,44 +304,12 @@ If **Yes** to deployment:
 
 | Prompt | Options |
 |--------|---------|
-| How do you want to deploy? | **Managed platform** or **Self-hosted server** |
+| Deployment type | **ssh**, docker, ec2, azure-vm, gcp-vm, kubernetes |
+| Host, user, deploy path | SSH credentials and remote directory |
 
-#### Option A — Managed platform (Vercel, Netlify, …)
+#### Self-hosted server (SSH, Docker, EC2, …)
 
-Best for static sites and Jamstack frontends. DeployHub builds locally/CI, uploads the artifact, then invokes the platform CLI.
-
-| Platform | Best for | Secrets to add |
-|----------|----------|----------------|
-| Vercel | Next.js, React | `VERCEL_TOKEN`, `VERCEL_ORG_ID`, `VERCEL_PROJECT_ID` |
-| Netlify | React, Vue, Svelte | `NETLIFY_AUTH_TOKEN`, `NETLIFY_SITE_ID` |
-| Cloudflare Pages | Astro, static React | `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, `CF_PROJECT_NAME` |
-| AWS Amplify | React, Next.js on AWS | `AWS_*`, `AMPLIFY_APP_ID` |
-| Azure Static Web Apps | React, Angular | `AZURE_STATIC_WEB_APPS_TOKEN` |
-| Firebase Hosting | SPAs | `FIREBASE_TOKEN`, `FIREBASE_PROJECT_ID` |
-| Firebase App Hosting | Next.js / Angular SSR | `FIREBASE_TOKEN`, `FIREBASE_PROJECT_ID`, `FIREBASE_APP_HOSTING_BACKEND` |
-
-**Example: Vue → Google Drive + Netlify**
-
-```bash
-deployhub init
-# Frontend only → Vue
-# Storage: Local + Google Drive
-# Configure deployment? Yes
-# Managed platform → Netlify
-# Site ID: (from Netlify dashboard)
-```
-
-```bash
-cp .env.example .env
-# GDRIVE_* and NETLIFY_AUTH_TOKEN, NETLIFY_SITE_ID
-
-deployhub doctor
-git push origin main
-```
-
-#### Option B — Self-hosted server (SSH, Docker, EC2, …)
-
-Best when you serve static files from your own VPS. DeployHub uploads the built `dist/` (or your output dir) over SSH and can generate `nginx.conf`.
+Best when you serve static files from your own VPS or cloud VM. DeployHub uploads the built `dist/` (or your output dir) over SSH and can generate `nginx.conf`.
 
 | Deploy type | You provide |
 |-------------|-------------|
@@ -347,6 +318,24 @@ Best when you serve static files from your own VPS. DeployHub uploads the built 
 | **ec2** | SSH credentials to EC2 instance |
 | **azure-vm** / **gcp-vm** | SSH to VM |
 | **kubernetes** | Cluster credentials (via env / kubeconfig) |
+
+**Example: Vue → Google Drive + SSH**
+
+```bash
+deployhub init
+# Frontend only → Vue
+# Storage: Local + Google Drive
+# Configure deployment? Yes → ssh
+# Host, user, deploy path: /var/www/my-app
+```
+
+```bash
+cp .env.example .env
+# GDRIVE_* and SSH_HOST, SSH_USER, SSH_KEY
+
+deployhub doctor
+git push origin main
+```
 
 **Example: Angular → Azure Blob + SSH**
 
@@ -368,7 +357,7 @@ Add `AZURE_*`, `SSH_HOST`, `SSH_USER`, `SSH_KEY` to `.env` and GitHub Secrets. R
 | React | `npm run build` | `dist` or `build` | Create React App uses `build` |
 | Vue | `npm run build` | `dist` | Vite default |
 | Angular | `ng build` | `dist` | |
-| Next.js | `npm run build` | `.next` | Platform deploy recommended |
+| Next.js | `npm run build` | `.next` | Use Vercel/Netlify native deploy for managed hosting |
 | Svelte | `npm run build` | `public` | |
 | Astro | `astro build` | `dist` | |
 | Vanilla JS | *(none)* | `.` | Copies static files as-is |
@@ -377,7 +366,7 @@ Add `AZURE_*`, `SSH_HOST`, `SSH_USER`, `SSH_KEY` to `.env` and GitHub Secrets. R
 
 ## Walkthrough: Backend only
 
-Backends always deploy to a **self-hosted target** (SSH, Docker, EC2, Azure VM, GCP VM, or Kubernetes). There is no “managed platform” path for backend-only projects.
+Backends always deploy to a **self-hosted target** (SSH, Docker, EC2, Azure VM, GCP VM, or Kubernetes).
 
 ### Init choices
 
@@ -453,10 +442,10 @@ Choose **Both (monorepo / fullstack)** when frontend and backend live in the **s
 2. **Backend** — framework, start command, port.
 3. **Storage** — one or more providers.
 4. **Configure deployment?** → Yes.
-5. **Frontend deploy method** — Managed platform **or** self-hosted SSH.
-6. **Backend deploy** — always self-hosted (SSH, Docker, EC2, …).
+5. **Frontend deploy path** — self-hosted SSH (static files + nginx).
+6. **Backend deploy** — SSH, Docker, EC2, etc.
 
-DeployHub runs **both** builds, packs them into one artifact, uploads once, then deploys frontend and backend to their respective targets.
+DeployHub runs **both** builds, packs them into one artifact, uploads once, then deploys frontend and backend to their respective server targets.
 
 ### Example: React + Express monorepo
 
@@ -467,11 +456,11 @@ deployhub init
 # Backend: Express, npm start, port 3000
 # Storage: AWS S3 + Local
 # Configure deployment? Yes
-# Frontend: Managed platform → Vercel
+# Frontend: ssh → /var/www/my-app/public
 # Backend: ssh → api.example.com, path /var/www/my-app/api, PM2 name my-app-api
 ```
 
-**Secrets:** AWS + `VERCEL_*` + `SSH_*`
+**Secrets:** AWS + `SSH_*`
 
 **Layout tip:** Keep `package.json` scripts for both apps at the repo root, or ensure build commands point to the correct paths (edit `deployhub.config.json` after init if your monorepo uses subfolders).
 
@@ -489,7 +478,7 @@ DeployHub generates `nginx.conf` to serve static files and proxy API requests.
 
 ### Example: Next.js API routes only
 
-Use **Frontend only** with **Next.js** and deploy to **Vercel** or **Firebase App Hosting** — no separate backend entry needed.
+Use **Frontend only** with **Next.js** and deploy via **SSH** or your platform's native git-push workflow — no separate backend entry needed.
 
 ---
 
@@ -585,9 +574,9 @@ You can enable **multiple providers** — DeployHub uploads to all of them in pa
 
 | Project type | Frontend deploy options | Backend deploy options |
 |--------------|-------------------------|------------------------|
-| Frontend only | Platform **or** SSH/Docker/EC2/K8s | — |
+| Frontend only | SSH/Docker/EC2/Azure VM/GCP VM/K8s | — |
 | Backend only | — | SSH/Docker/EC2/Azure VM/GCP VM/K8s |
-| Full stack | Platform **or** SSH (static + nginx) | SSH/Docker/EC2/K8s (always) |
+| Full stack | SSH (static + nginx) | SSH/Docker/EC2/K8s (always) |
 
 | Mode | Storage | Deploy | When to use |
 |------|---------|--------|-------------|
@@ -654,7 +643,6 @@ Prefer `deployhub init` over hand-writing config — it sets adapters, workflow,
 | SSH deploy fails | Verify `SSH_KEY` is the **private** key; user can write to deploy path |
 | Wrong output uploaded | Fix `buildOutput` in config (`dist` vs `build` vs `.next`) |
 | Tests fail in CI | Set `"pipeline": { "test": false }` temporarily, or fix tests |
-| Platform deploy missing CLI | Install platform CLI in CI (workflow does this for Vercel, Netlify, etc.) |
 | Monorepo subfolders | Edit `buildCommand` paths in `deployhub.config.json` after init |
 
 Run `deployhub doctor` after any config change.
@@ -715,18 +703,6 @@ Add these secrets in your repository (Settings → Secrets and variables → Act
 | `SSH_APP_NAME` | PM2 process name for backends |
 | `SSH_PORT` | App port on server (optional) |
 
-### Managed platforms (frontend)
-
-| Secret | Platform |
-|--------|----------|
-| `VERCEL_TOKEN`, `VERCEL_ORG_ID`, `VERCEL_PROJECT_ID` | Vercel |
-| `NETLIFY_AUTH_TOKEN`, `NETLIFY_SITE_ID` | Netlify |
-| `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, `CF_PROJECT_NAME` | Cloudflare Pages |
-| `AMPLIFY_APP_ID` (+ `AWS_*` if not already set) | AWS Amplify |
-| `AZURE_STATIC_WEB_APPS_TOKEN` | Azure Static Web Apps |
-| `FIREBASE_TOKEN`, `FIREBASE_PROJECT_ID` | Firebase Hosting |
-| `FIREBASE_APP_HOSTING_BACKEND` | Firebase App Hosting |
-
 ## `deployhub doctor` Output
 
 The doctor command runs independent checks and always completes without crashing:
@@ -772,6 +748,25 @@ artifact/
         release-notes.md
         README.md
 ```
+
+`deployment.json` records server deployment metadata per environment:
+
+```json
+{
+  "targets": ["production"],
+  "deployedAt": "2026-07-01T12:00:00.000Z",
+  "deployments": [
+    {
+      "environmentName": "production",
+      "serverAddress": "203.0.113.10",
+      "processId": "my-api",
+      "timestamp": "2026-07-01T12:00:00.000Z"
+    }
+  ]
+}
+```
+
+Rollback redeploys a previous artifact to the configured server targets using this metadata.
 
 ## Configuration
 

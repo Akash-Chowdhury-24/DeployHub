@@ -18,15 +18,7 @@ import {
   addDeployhubToPackageJson,
   DEFAULT_NPM_CLI_SOURCE,
 } from '../utils/github-actions.js';
-import {
-  promptPlatformQuestions,
-  appendPlatformEnvExample,
-  showPlatformComparison,
-  suggestHealthUrl,
-  PLATFORM_CHOICES,
-} from '../utils/init-platform.js';
 import { printAuthorFooter } from '../utils/author.js';
-import { ensureFirebaseJson } from '../utils/firebase-config-generator.js';
 import { generateNginxConfig } from '../utils/nginx.js';
 
 const FRONTEND_CHOICES = [
@@ -297,23 +289,9 @@ function buildServerEnvEntry(
 async function generateProjectScaffold(config, environments, cwd) {
   const envList = Object.values(environments);
 
-  const usesFirebase = envList.some(
-    (env) =>
-      env.platform === 'firebase-hosting' || env.platform === 'firebase-app-hosting'
+  const usesFrontendSsh = envList.some(
+    (env) => env.type === 'ssh' || env.deploymentType === 'server'
   );
-
-  if (usesFirebase && !(await fs.pathExists(path.join(cwd, 'firebase.json')))) {
-    const buildOutput =
-      config.frontend?.buildOutput || config.buildOutput || 'dist';
-    await ensureFirebaseJson(buildOutput, cwd);
-    console.log(chalk.gray('  • firebase.json (auto-generated)'));
-  }
-
-  const usesFrontendSsh = envList.some((env) => {
-    if (env.frontendDeploymentType === 'platform') return false;
-    if (env.deploymentType === 'platform' && !env.type) return false;
-    return env.type === 'ssh' || env.deploymentType === 'server';
-  });
 
   const isFrontendProject =
     config.projectType === 'frontend' || config.projectType === 'both';
@@ -455,9 +433,6 @@ export function registerInitCommand(program) {
       let healthUrl = '';
 
       if (answers.configureDeploy) {
-        const buildOutput =
-          frontendConfig?.buildOutput || singleConfig?.buildOutput || 'dist';
-
         if (projectType === 'backend') {
           const deployAnswers = await promptServerDeployment(
             projectName,
@@ -479,103 +454,24 @@ export function registerInitCommand(program) {
             healthUrl = `http://localhost:${singleConfig.port}/health`;
           }
         } else if (projectType === 'frontend') {
-          const { deployMethod } = await inquirer.prompt([
-            {
-              type: 'list',
-              name: 'deployMethod',
-              message: 'How do you want to deploy?',
-              choices: [
-                {
-                  name: 'Managed platform (Vercel, Netlify, Cloudflare Pages, etc.)',
-                  value: 'platform',
-                },
-                {
-                  name: 'Self-hosted server (SSH, Docker, EC2, etc.)',
-                  value: 'server',
-                },
-              ],
-            },
-          ]);
-
-          const { envName } = await inquirer.prompt([
-            {
-              type: 'input',
-              name: 'envName',
-              message: 'Environment name:',
-              default: 'production',
-            },
-          ]);
-          deploy.push(envName);
-
-          if (deployMethod === 'platform') {
-            showPlatformComparison();
-            const { platform } = await inquirer.prompt([
-              {
-                type: 'list',
-                name: 'platform',
-                message: 'Select platform:',
-                choices: PLATFORM_CHOICES,
-              },
-            ]);
-
-            const platformConfig = await promptPlatformQuestions(
-              platform,
-              projectName,
-              buildOutput,
-              cwd
-            );
-            await appendPlatformEnvExample(platform, cwd);
-
-            const { healthUrlInput } = await inquirer.prompt([
-              {
-                type: 'input',
-                name: 'healthUrlInput',
-                message: 'Health check URL (optional):',
-                default: suggestHealthUrl(platform, projectName),
-              },
-            ]);
-
-            environments[envName] = {
-              deploymentType: 'platform',
-              ...platformConfig,
-            };
-            healthUrl = healthUrlInput || suggestHealthUrl(platform, projectName);
-          } else {
-            const deployAnswers = await promptServerDeployment(
-              projectName,
-              projectType,
-              backendConfig,
-              singleConfig
-            );
-            deployAnswers.envName = envName;
-            environments[envName] = buildServerEnvEntry(
-              deployAnswers,
-              projectType,
-              projectName,
-              backendConfig,
-              singleConfig
-            );
-            if (deployAnswers.healthUrl) healthUrl = deployAnswers.healthUrl;
+          const deployAnswers = await promptServerDeployment(
+            projectName,
+            projectType,
+            backendConfig,
+            singleConfig
+          );
+          deploy.push(deployAnswers.envName);
+          environments[deployAnswers.envName] = buildServerEnvEntry(
+            deployAnswers,
+            projectType,
+            projectName,
+            backendConfig,
+            singleConfig
+          );
+          if (deployAnswers.healthUrl) {
+            healthUrl = deployAnswers.healthUrl;
           }
         } else {
-          const { frontendDeployMethod } = await inquirer.prompt([
-            {
-              type: 'list',
-              name: 'frontendDeployMethod',
-              message: 'How do you want to deploy the frontend?',
-              choices: [
-                {
-                  name: 'Managed platform (Vercel, Netlify, Cloudflare Pages, etc.)',
-                  value: 'platform',
-                },
-                {
-                  name: 'Self-hosted server (SSH, Docker, EC2, etc.)',
-                  value: 'server',
-                },
-              ],
-            },
-          ]);
-
           const { envName } = await inquirer.prompt([
             {
               type: 'input',
@@ -587,36 +483,11 @@ export function registerInitCommand(program) {
           deploy.push(envName);
 
           /** @type {Record<string, unknown>} */
-          const envEntry = { backendDeploymentType: 'server' };
-
-          if (frontendDeployMethod === 'platform') {
-            showPlatformComparison();
-            const { platform } = await inquirer.prompt([
-              {
-                type: 'list',
-                name: 'platform',
-                message: 'Select frontend platform:',
-                choices: PLATFORM_CHOICES,
-              },
-            ]);
-
-            const platformConfig = await promptPlatformQuestions(
-              platform,
-              projectName,
-              buildOutput,
-              cwd
-            );
-            await appendPlatformEnvExample(platform, cwd);
-
-            Object.assign(envEntry, {
-              frontendDeploymentType: 'platform',
-              deploymentType: 'platform',
-              ...platformConfig,
-            });
-            healthUrl = suggestHealthUrl(platform, projectName);
-          } else {
-            envEntry.frontendDeploymentType = 'server';
-          }
+          const envEntry = {
+            backendDeploymentType: 'server',
+            frontendDeploymentType: 'server',
+            deploymentType: 'server',
+          };
 
           console.log(chalk.gray('\nBackend will be deployed to a self-hosted server.'));
           const backendDeployAnswers = await inquirer.prompt([
@@ -664,8 +535,7 @@ export function registerInitCommand(program) {
             path: backendDeployAnswers.backendDeployPath || `/var/www/${projectName}/api`,
           });
 
-          if (frontendDeployMethod === 'server') {
-            const { frontendDeployPath } = await inquirer.prompt([
+          const { frontendDeployPath } = await inquirer.prompt([
               {
                 type: 'input',
                 name: 'frontendDeployPath',
@@ -673,8 +543,7 @@ export function registerInitCommand(program) {
                 default: `/var/www/${projectName}/public`,
               },
             ]);
-            envEntry.frontendDeployPath = frontendDeployPath;
-          }
+          envEntry.frontendDeployPath = frontendDeployPath;
 
           const { healthUrlInput } = await inquirer.prompt([
             {
