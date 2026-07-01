@@ -105,6 +105,12 @@ export async function promptPlatformQuestions(
           default: 'us-east-1',
         },
         {
+          type: 'input',
+          name: 'branch',
+          message: 'Amplify branch name (auto-created for manual zip deploys):',
+          default: 'main',
+        },
+        {
           type: 'confirm',
           name: 'githubConnected',
           message: 'GitHub already connected to Amplify?',
@@ -113,6 +119,7 @@ export async function promptPlatformQuestions(
       ]);
       config.appId = answers.appId;
       config.region = answers.region;
+      config.branch = answers.branch;
       config.githubConnected = answers.githubConnected;
       break;
     }

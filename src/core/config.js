@@ -21,6 +21,7 @@ const EnvironmentSchema = z.object({
   accountId: z.string().optional(),
   appId: z.string().optional(),
   region: z.string().optional(),
+  branch: z.string().optional(),
   githubConnected: z.boolean().optional(),
   resourceName: z.string().optional(),
   projectId: z.string().optional(),
