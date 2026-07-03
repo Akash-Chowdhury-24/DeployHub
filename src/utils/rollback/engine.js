@@ -1,12 +1,12 @@
-import { downloadFromFirst } from '../storage/index.js';
-import { getDeploymentProvider } from '../deployment/index.js';
-import { extractArtifact } from '../artifact/engine.js';
-import { createLogger } from '../logger/index.js';
+import { downloadFromFirst } from '../../storage/index.js';
+import { getDeploymentProvider } from '../../deployment/index.js';
+import { extractArtifact } from '../../artifact/engine.js';
+import { createLogger } from '../../logger/index.js';
 import fs from 'fs-extra';
 import path from 'path';
 
 /**
- * @param {import('../core/config.js').DeployHubConfig} config
+ * @param {import('../../core/config.js').DeployHubConfig} config
  * @param {string} artifactDir
  * @param {string} envName
  */
@@ -24,7 +24,7 @@ async function rollbackTarget(config, artifactDir, envName) {
 }
 
 /**
- * @param {import('../core/config.js').DeployHubConfig} config
+ * @param {import('../../core/config.js').DeployHubConfig} config
  * @param {string} version
  * @param {string} [cwd]
  */

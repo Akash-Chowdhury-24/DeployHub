@@ -35,8 +35,9 @@
   "scripts": {
     "start": "node src/cli/index.js",
     "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js",
-    "prepublishOnly": "npm test",
-    "build:bundle": "node scripts/build-bundle.mjs",
+    "verify:bundle-sources": "node scripts/verify-bundle-sources.mjs",
+    "prepublishOnly": "npm test && npm run verify:bundle-sources",
+    "build:bundle": "node scripts/verify-bundle-sources.mjs && node scripts/build-bundle.mjs",
     "build:binaries": "npm run build:bundle && node scripts/prefetch-pkg-cache.mjs && pkg dist/deployhub.cjs --targets node20-linux-x64,node20-macos-x64,node20-macos-arm64,node20-win-x64 --output dist/deployhub --compress GZip"
   },
   "pkg": {

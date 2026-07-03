@@ -1,6 +1,6 @@
 import chalk from 'chalk';
 import { loadConfig, loadEnv } from '../core/config.js';
-import { rollbackToVersion } from '../rollback/engine.js';
+import { rollbackToVersion } from '../utils/rollback/engine.js';
 import axios from 'axios';
 
 /**
