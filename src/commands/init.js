@@ -2,7 +2,7 @@ import inquirer from 'inquirer';
 import chalk from 'chalk';
 import fs from 'fs-extra';
 import path from 'path';
-import { saveConfig } from '../core/config.js';
+import { saveConfig, appendEnv } from '../core/config.js';
 import { detectFrontend, detectBackend } from '../detectors/index.js';
 import {
   getFrontendInfo,
@@ -20,6 +20,13 @@ import {
 } from '../utils/github-actions.js';
 import { printAuthorFooter } from '../utils/author.js';
 import { generateNginxConfig } from '../utils/nginx.js';
+import {
+  promptServerDeployment,
+  buildServerEnvEntry,
+  getDockerEnvSecrets,
+  SSH_BASED,
+} from '../deployment/init-prompts.js';
+import { printDeploymentNextSteps } from '../deployment/deployment-env.js';
 
 const FRONTEND_CHOICES = [
   { name: 'React', value: 'react' },
@@ -151,136 +158,6 @@ async function promptBuildSettings(defaults, side) {
   return inquirer.prompt(questions);
 }
 
-const SERVER_DEPLOY_TYPES = [
-  'ssh',
-  'docker',
-  'ec2',
-  'azure-vm',
-  'gcp-vm',
-  'kubernetes',
-];
-
-/**
- * @param {string} projectName
- * @param {'frontend'|'backend'|'both'} projectType
- * @param {Record<string, unknown>|null} backendConfig
- * @param {Record<string, unknown>|null} singleConfig
- */
-async function promptServerDeployment(projectName, projectType, backendConfig, singleConfig) {
-  return inquirer.prompt([
-    {
-      type: 'list',
-      name: 'deployType',
-      message: 'Deployment type:',
-      choices: SERVER_DEPLOY_TYPES,
-    },
-    {
-      type: 'input',
-      name: 'envName',
-      message: 'Environment name:',
-      default: 'production',
-    },
-    {
-      type: 'input',
-      name: 'host',
-      message: 'Host (for SSH-based targets):',
-      when: (a) => ['ssh', 'ec2', 'azure-vm', 'gcp-vm'].includes(a.deployType),
-    },
-    {
-      type: 'input',
-      name: 'user',
-      message: 'SSH user:',
-      when: (a) => ['ssh', 'ec2', 'azure-vm', 'gcp-vm'].includes(a.deployType),
-    },
-    {
-      type: 'input',
-      name: 'deployPath',
-      message: 'Deploy path:',
-      default: `/var/www/${projectName}`,
-      when: (a) =>
-        ['ssh', 'ec2', 'azure-vm', 'gcp-vm'].includes(a.deployType) &&
-        projectType !== 'both',
-    },
-    {
-      type: 'input',
-      name: 'frontendDeployPath',
-      message: 'Frontend deploy path:',
-      default: `/var/www/${projectName}/public`,
-      when: (a) =>
-        ['ssh', 'ec2', 'azure-vm', 'gcp-vm'].includes(a.deployType) &&
-        projectType === 'both',
-    },
-    {
-      type: 'input',
-      name: 'backendDeployPath',
-      message: 'Backend deploy path:',
-      default: `/var/www/${projectName}/api`,
-      when: (a) =>
-        ['ssh', 'ec2', 'azure-vm', 'gcp-vm'].includes(a.deployType) &&
-        projectType === 'both',
-    },
-    {
-      type: 'input',
-      name: 'appName',
-      message: 'App name (for PM2):',
-      default: projectType === 'both' ? `${projectName}-api` : projectName,
-      when: (a) =>
-        ['ssh', 'ec2', 'azure-vm', 'gcp-vm'].includes(a.deployType) &&
-        (projectType === 'backend' || projectType === 'both'),
-    },
-    {
-      type: 'input',
-      name: 'healthUrl',
-      message: 'Health check URL (optional):',
-    },
-  ]);
-}
-
-/**
- * @param {Awaited<ReturnType<typeof promptServerDeployment>>} deployAnswers
- * @param {'frontend'|'backend'|'both'} projectType
- * @param {string} projectName
- * @param {Record<string, unknown>|null} backendConfig
- * @param {Record<string, unknown>|null} singleConfig
- */
-function buildServerEnvEntry(
-  deployAnswers,
-  projectType,
-  projectName,
-  backendConfig,
-  singleConfig
-) {
-  /** @type {Record<string, unknown>} */
-  const envEntry = {
-    deploymentType: 'server',
-    type: deployAnswers.deployType,
-    host: deployAnswers.host || '',
-    user: deployAnswers.user || '',
-  };
-
-  if (projectType === 'both') {
-    envEntry.frontendDeployPath =
-      deployAnswers.frontendDeployPath || `/var/www/${projectName}/public`;
-    envEntry.backendDeployPath =
-      deployAnswers.backendDeployPath || `/var/www/${projectName}/api`;
-    envEntry.appName = deployAnswers.appName || `${projectName}-api`;
-    envEntry.framework = backendConfig?.framework || 'express';
-    envEntry.path = envEntry.backendDeployPath;
-    envEntry.backendDeploymentType = 'server';
-  } else if (projectType === 'backend') {
-    envEntry.deployPath = deployAnswers.deployPath || `/var/www/${projectName}`;
-    envEntry.path = envEntry.deployPath;
-    envEntry.appName = deployAnswers.appName || projectName;
-    envEntry.framework = singleConfig?.framework || 'express';
-    envEntry.port = singleConfig?.port || 3000;
-  } else {
-    envEntry.deployPath = deployAnswers.deployPath || `/var/www/${projectName}`;
-    envEntry.path = envEntry.deployPath;
-  }
-
-  return envEntry;
-}
-
 /**
  * @param {Record<string, unknown>} config
  * @param {Record<string, Record<string, unknown>>} environments
@@ -290,7 +167,8 @@ async function generateProjectScaffold(config, environments, cwd) {
   const envList = Object.values(environments);
 
   const usesFrontendSsh = envList.some(
-    (env) => env.type === 'ssh' || env.deploymentType === 'server'
+    (env) =>
+      SSH_BASED.includes(env.type) || env.deploymentType === 'server'
   );
 
   const isFrontendProject =
@@ -431,15 +309,19 @@ export function registerInitCommand(program) {
       /** @type {string[]} */
       const deploy = [];
       let healthUrl = '';
+      /** @type {string|undefined} */
+      let primaryDeployType;
+      /** @type {Record<string, string>|null} */
+      let dockerEnvToAppend = null;
 
       if (answers.configureDeploy) {
         if (projectType === 'backend') {
           const deployAnswers = await promptServerDeployment(
             projectName,
             projectType,
-            backendConfig,
-            singleConfig
+            backendConfig
           );
+          primaryDeployType = deployAnswers.deployType;
           deploy.push(deployAnswers.envName);
           environments[deployAnswers.envName] = buildServerEnvEntry(
             deployAnswers,
@@ -453,13 +335,14 @@ export function registerInitCommand(program) {
           } else if (singleConfig?.port) {
             healthUrl = `http://localhost:${singleConfig.port}/health`;
           }
+          dockerEnvToAppend = getDockerEnvSecrets(deployAnswers);
         } else if (projectType === 'frontend') {
           const deployAnswers = await promptServerDeployment(
             projectName,
             projectType,
-            backendConfig,
-            singleConfig
+            backendConfig
           );
+          primaryDeployType = deployAnswers.deployType;
           deploy.push(deployAnswers.envName);
           environments[deployAnswers.envName] = buildServerEnvEntry(
             deployAnswers,
@@ -471,16 +354,15 @@ export function registerInitCommand(program) {
           if (deployAnswers.healthUrl) {
             healthUrl = deployAnswers.healthUrl;
           }
+          dockerEnvToAppend = getDockerEnvSecrets(deployAnswers);
         } else {
-          const { envName } = await inquirer.prompt([
-            {
-              type: 'input',
-              name: 'envName',
-              message: 'Environment name:',
-              default: 'production',
-            },
-          ]);
-          deploy.push(envName);
+          const backendDeployAnswers = await promptServerDeployment(
+            projectName,
+            'both',
+            backendConfig
+          );
+          primaryDeployType = backendDeployAnswers.deployType;
+          deploy.push(backendDeployAnswers.envName);
 
           /** @type {Record<string, unknown>} */
           const envEntry = {
@@ -489,76 +371,25 @@ export function registerInitCommand(program) {
             deploymentType: 'server',
           };
 
-          console.log(chalk.gray('\nBackend will be deployed to a self-hosted server.'));
-          const backendDeployAnswers = await inquirer.prompt([
-            {
-              type: 'list',
-              name: 'deployType',
-              message: 'Backend deployment type:',
-              choices: SERVER_DEPLOY_TYPES,
-              default: 'ssh',
-            },
-            {
-              type: 'input',
-              name: 'host',
-              message: 'Host (for SSH-based targets):',
-              when: (a) => ['ssh', 'ec2', 'azure-vm', 'gcp-vm'].includes(a.deployType),
-            },
-            {
-              type: 'input',
-              name: 'user',
-              message: 'SSH user:',
-              when: (a) => ['ssh', 'ec2', 'azure-vm', 'gcp-vm'].includes(a.deployType),
-            },
-            {
-              type: 'input',
-              name: 'backendDeployPath',
-              message: 'Backend deploy path:',
-              default: `/var/www/${projectName}/api`,
-            },
-            {
-              type: 'input',
-              name: 'appName',
-              message: 'App name (for PM2):',
-              default: `${projectName}-api`,
-            },
-          ]);
+          Object.assign(
+            envEntry,
+            buildServerEnvEntry(
+              backendDeployAnswers,
+              'both',
+              projectName,
+              backendConfig,
+              singleConfig
+            )
+          );
 
-          Object.assign(envEntry, {
-            type: backendDeployAnswers.deployType,
-            host: backendDeployAnswers.host || '',
-            user: backendDeployAnswers.user || '',
-            backendDeployPath:
-              backendDeployAnswers.backendDeployPath || `/var/www/${projectName}/api`,
-            appName: backendDeployAnswers.appName || `${projectName}-api`,
-            framework: backendConfig?.framework || 'express',
-            path: backendDeployAnswers.backendDeployPath || `/var/www/${projectName}/api`,
-          });
-
-          const { frontendDeployPath } = await inquirer.prompt([
-              {
-                type: 'input',
-                name: 'frontendDeployPath',
-                message: 'Frontend deploy path:',
-                default: `/var/www/${projectName}/public`,
-              },
-            ]);
-          envEntry.frontendDeployPath = frontendDeployPath;
-
-          const { healthUrlInput } = await inquirer.prompt([
-            {
-              type: 'input',
-              name: 'healthUrlInput',
-              message: 'Health check URL (optional):',
-              default: healthUrl || '',
-            },
-          ]);
-          if (healthUrlInput) healthUrl = healthUrlInput;
-          else if (!healthUrl && backendConfig?.port) {
+          if (backendDeployAnswers.healthUrl) {
+            healthUrl = backendDeployAnswers.healthUrl;
+          } else if (backendConfig?.port) {
             healthUrl = `http://localhost:${backendConfig.port}/health`;
           }
 
-          environments[envName] = envEntry;
+          environments[backendDeployAnswers.envName] = envEntry;
+          dockerEnvToAppend = getDockerEnvSecrets(backendDeployAnswers);
         }
       }
 
@@ -611,6 +442,9 @@ export function registerInitCommand(program) {
       }
 
       await saveConfig(config, cwd);
+      if (dockerEnvToAppend) {
+        await appendEnv(dockerEnvToAppend, cwd);
+      }
       await addDeployhubToPackageJson(cliSource, cwd);
       await writeWorkflowFile(
         config.storage,
@@ -635,21 +469,27 @@ export function registerInitCommand(program) {
       const secrets = getRequiredSecrets(config.storage, deploy, environments, config);
 
       console.log('');
-      console.log(chalk.green.bold('✓ DeployHub initialized successfully!'));
+      if (primaryDeployType) {
+        console.log(chalk.green.bold(`✔ Config generated for ${primaryDeployType} deployment.`));
+        printDeploymentNextSteps(primaryDeployType, secrets);
+      } else {
+        console.log(chalk.green.bold('✓ DeployHub initialized successfully!'));
+        console.log('');
+        console.log(chalk.bold('Next steps:'));
+        console.log('  1. Copy .env.example to .env and fill in credentials');
+        if (secrets.length > 0) {
+          console.log('  2. Add these secrets to GitHub (Settings → Secrets):');
+          secrets.forEach((s) => console.log(`     • ${s}`));
+        }
+        console.log(`  ${secrets.length > 0 ? '3' : '2'}. Run ${chalk.cyan('deployhub doctor')} to verify your setup`);
+        console.log(`  ${secrets.length > 0 ? '4' : '3'}. Push to main — GitHub Actions will run ${chalk.cyan('deployhub build')} automatically`);
+      }
+
       console.log('');
       console.log(chalk.bold('Generated files:'));
       console.log('  • deployhub.config.json');
       console.log('  • .github/workflows/deployhub.yml');
       console.log('  • .env.example');
-      console.log('');
-      console.log(chalk.bold('Next steps:'));
-      console.log('  1. Copy .env.example to .env and fill in credentials');
-      if (secrets.length > 0) {
-        console.log('  2. Add these secrets to GitHub (Settings → Secrets):');
-        secrets.forEach((s) => console.log(`     • ${s}`));
-      }
-      console.log(`  ${secrets.length > 0 ? '3' : '2'}. Run ${chalk.cyan('deployhub doctor')} to verify your setup`);
-      console.log(`  ${secrets.length > 0 ? '4' : '3'}. Push to main — GitHub Actions will run ${chalk.cyan('deployhub build')} automatically`);
       console.log('');
       printAuthorFooter();
     });

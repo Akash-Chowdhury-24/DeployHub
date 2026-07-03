@@ -39,27 +39,44 @@ export function createSshProvider(config, envName, env = process.env) {
   const port = environment.port || config.port || Number(env.SSH_PORT) || 3000;
   const sshKey = env.SSH_KEY;
   const keyPath = environment.keyPath || env.SSH_KEY_PATH;
+  const sshPort = Number(env.SSH_SSH_PORT) || environment.sshPort || 22;
 
   const log = createLogger('ssh');
 
   async function connect() {
     if (!host || !user) {
-      throw new Error('SSH host and user are required. Set SSH_HOST and SSH_USER in .env');
+      throw new Error(
+        'SSH host and user are required. Set SSH_HOST and SSH_USER in .env (see .env.example comments).'
+      );
+    }
+
+    if (!sshKey && !keyPath) {
+      throw new Error(
+        'SSH authentication required. Set SSH_KEY_PATH (local) or SSH_KEY (CI secret) in .env — see .env.example.'
+      );
     }
 
     const ssh = new NodeSSH();
     /** @type {import('node-ssh').SSHConnectOptions} */
-    const connectOpts = { host, username: user };
+    const connectOpts = { host, username: user, port: sshPort };
 
     if (sshKey) {
       const tmpKeyPath = path.join(os.tmpdir(), 'deployhub-ssh-key');
       await fs.writeFile(tmpKeyPath, sshKey, { mode: 0o600 });
       connectOpts.privateKeyPath = tmpKeyPath;
     } else if (keyPath) {
-      connectOpts.privateKeyPath = keyPath;
+      const expanded = keyPath.replace(/^~/, os.homedir());
+      connectOpts.privateKeyPath = path.resolve(expanded);
     }
 
-    await ssh.connect(connectOpts);
+    try {
+      await ssh.connect(connectOpts);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new Error(
+        `SSH connection failed to ${user}@${host}:${sshPort} — ${msg}. Check SSH_HOST, SSH_USER, SSH_KEY_PATH, and that port ${sshPort} is open in your firewall/security group.`
+      );
+    }
     return ssh;
   }
 

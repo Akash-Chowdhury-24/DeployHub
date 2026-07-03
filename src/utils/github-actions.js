@@ -1,6 +1,11 @@
 import fs from 'fs-extra';
 import path from 'path';
 import { getWorkflowHeaderComment } from './author.js';
+import {
+  generateDeploymentEnvSection,
+  getDeploymentSecretKeys,
+  DEPLOYMENT_ENV_KEYS,
+} from '../deployment/deployment-env.js';
 
 /** @typedef {'aws'|'azure'|'gcp'|'gdrive'|'dropbox'|'local'|'ftp'|'ssh'} ProviderEnvKey */
 
@@ -22,23 +27,27 @@ const PROVIDER_ENV_MAP = {
   dropbox: ['DROPBOX_ACCESS_TOKEN'],
   local: [],
   ftp: ['FTP_HOST', 'FTP_USER', 'FTP_PASSWORD'],
-  ssh: ['SSH_HOST', 'SSH_USER', 'SSH_KEY'],
+  ssh: DEPLOYMENT_ENV_KEYS.ssh,
+  docker: DEPLOYMENT_ENV_KEYS.docker,
+  ec2: DEPLOYMENT_ENV_KEYS.ec2,
+  'azure-vm': DEPLOYMENT_ENV_KEYS['azure-vm'],
+  'gcp-vm': DEPLOYMENT_ENV_KEYS['gcp-vm'],
+  kubernetes: DEPLOYMENT_ENV_KEYS.kubernetes,
 };
-
-const BACKEND_SSH_ENV_VARS = [
-  'SSH_DEPLOY_PATH',
-  'SSH_APP_NAME',
-  'SSH_PORT',
-];
 
 const PROVIDER_LABELS = {
   aws: 'AWS S3',
   azure: 'Azure Blob',
-  gcp: 'GCP',
+  gcp: 'GCP Storage',
   gdrive: 'Google Drive',
   dropbox: 'Dropbox',
   ftp: 'FTP',
   ssh: 'SSH Deployment',
+  docker: 'Docker Deployment',
+  ec2: 'AWS EC2 Deployment',
+  'azure-vm': 'Azure VM Deployment',
+  'gcp-vm': 'GCP VM Deployment',
+  kubernetes: 'Kubernetes Deployment',
 };
 
 const ENV_VAR_DEFAULTS = {
@@ -46,6 +55,7 @@ const ENV_VAR_DEFAULTS = {
   FTP_PORT: '21',
   FTP_PATH: '/uploads',
   SSH_DEPLOY_PATH: '/var/www/app',
+  SSH_SSH_PORT: '22',
   SMTP_PORT: '587',
 };
 
@@ -227,18 +237,9 @@ export function generateWorkflowYaml(
     const env = environments[envName];
     if (!env) continue;
 
-    const keys = PROVIDER_ENV_MAP[env.type] || [];
+    const keys = getDeploymentSecretKeys(env.type, config);
     for (const key of keys) {
       envVars.add(`${key}: \${{ secrets.${key} }}`);
-    }
-
-    if (env.type === 'ssh' && config) {
-      const projectType = config.projectType || 'frontend';
-      if (projectType === 'backend' || projectType === 'both') {
-        for (const key of BACKEND_SSH_ENV_VARS) {
-          envVars.add(`${key}: \${{ secrets.${key} }}`);
-        }
-      }
     }
   }
 
@@ -412,15 +413,8 @@ export function getRequiredSecrets(
     const env = environments[envName];
     if (!env) continue;
 
-    const keys = PROVIDER_ENV_MAP[env.type] || [];
+    const keys = getDeploymentSecretKeys(env.type, config);
     keys.forEach((k) => secrets.add(k));
-
-    if (env.type === 'ssh' && config) {
-      const projectType = config.projectType || 'frontend';
-      if (projectType === 'backend' || projectType === 'both') {
-        BACKEND_SSH_ENV_VARS.forEach((k) => secrets.add(k));
-      }
-    }
   }
 
   return Array.from(secrets);
@@ -481,18 +475,11 @@ export function generateEnvExampleContent(
 
   for (const envName of deployEnvironments) {
     const env = environments[envName];
-    if (!env) continue;
+    if (!env?.type) continue;
 
-    const keys = PROVIDER_ENV_MAP[env.type] || [];
-    if (keys.length > 0) {
-      addSection(PROVIDER_LABELS[env.type] || env.type, keys);
-    }
-
-    if (env.type === 'ssh' && config) {
-      const projectType = config.projectType || 'frontend';
-      if (projectType === 'backend' || projectType === 'both') {
-        addSection('SSH Deployment (backend)', BACKEND_SSH_ENV_VARS);
-      }
+    const deploySection = generateDeploymentEnvSection(env.type, config, environments);
+    if (deploySection) {
+      sections.push(`${deploySection}\n`);
     }
   }
 

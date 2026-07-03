@@ -585,6 +585,207 @@ You can enable **multiple providers** — DeployHub uploads to all of them in pa
 
 ---
 
+## Choosing a deployment method
+
+DeployHub supports six deployment targets. Pick based on what infrastructure you already have — DeployHub does not provision servers, VMs, or clusters for you.
+
+| Method | Best for | You need already |
+|--------|----------|------------------|
+| **ssh** | Any Linux VPS or bare-metal server you control | Server with SSH, key pair, app runtime |
+| **docker** | Containerized apps (Dockerfile or docker-compose.yml) | Docker locally or on a remote host |
+| **ec2** | AWS users with an existing EC2 instance | Running EC2 instance, security group, key pair |
+| **azure-vm** | Azure users with an existing virtual machine | Running Azure VM, NSG allowing SSH |
+| **gcp-vm** | GCP users with an existing Compute Engine VM | Running VM, firewall rule for SSH, metadata SSH key |
+| **kubernetes** | Teams with an existing K8s cluster | Cluster, kubectl access, manifests in repo |
+
+---
+
+## Deployment method guides
+
+Each method below follows the same structure: **prerequisites** (before `deployhub init`), **what DeployHub automates**, **after init** (matches terminal output), and a **variable reference**.
+
+### SSH
+
+**Prerequisites (before `deployhub init`):**
+- [ ] A Linux server with SSH enabled
+- [ ] Private SSH key file (.pem/.key) and public key in `authorized_keys`
+- [ ] Port 22 open in firewall for your IP
+- [ ] App runtime on server (Node.js, Python, etc.) for backends
+
+**What DeployHub automates:**
+- Complete `.env.example` with commented variables
+- SSH key permission check (offers to `chmod 600`)
+- SSH connectivity test during `init`
+- Artifact upload, extract, app restart (PM2, gunicorn, etc.)
+
+**After `init`:**
+1. Ensure port 22 is open in your server firewall
+2. Copy `.env.example` → `.env`; set `SSH_HOST`, `SSH_USER`, `SSH_KEY_PATH`
+3. Add GitHub Secrets: `SSH_HOST`, `SSH_USER`, `SSH_KEY` (paste private key for CI)
+4. Run `deployhub doctor`
+5. `git push origin main`
+
+| Variable | Description | Example | Where to get it |
+|----------|-------------|---------|-----------------|
+| `SSH_HOST` | Server IP or hostname | `203.0.113.10` | Your hosting provider dashboard |
+| `SSH_USER` | SSH login user | `ubuntu` | AMI/image docs (Ubuntu→ubuntu, Amazon Linux→ec2-user) |
+| `SSH_KEY_PATH` | Path to private key file | `~/.ssh/my-key.pem` | Downloaded when server was created |
+| `SSH_SSH_PORT` | SSH port (optional) | `22` | Server SSH config |
+| `SSH_DEPLOY_PATH` | Remote deploy directory | `/var/www/my-app` | Your server layout |
+| `SSH_APP_NAME` | PM2 process name (backend) | `my-api` | Your choice |
+| `SSH_PORT` | App listen port (backend) | `3000` | Your app config |
+| `SSH_KEY` | Private key contents (CI only) | `-----BEGIN...` | Same key as `SSH_KEY_PATH` |
+
+### Docker
+
+**Prerequisites:**
+- [ ] Docker installed (`docker --version` works)
+- [ ] `Dockerfile` or `docker-compose.yml` in project
+- [ ] Registry account if pushing private images
+
+**What DeployHub automates:**
+- `.env.example` for image name, registry, remote `DOCKER_HOST`
+- Docker daemon connectivity test during `init`
+- `docker compose up` or build/push/run during deploy
+
+**After `init`:**
+1. Set `DOCKER_IMAGE_NAME` in `.env`
+2. For private registries: set `DOCKER_REGISTRY_USERNAME` and `DOCKER_REGISTRY_TOKEN`
+3. For remote Docker: set `DOCKER_HOST` (e.g. `ssh://ubuntu@203.0.113.10`)
+4. Run `deployhub doctor`, then `git push origin main`
+
+| Variable | Description | Example | Where to get it |
+|----------|-------------|---------|-----------------|
+| `DOCKER_IMAGE_NAME` | Image repository path | `myorg/myapp` | Your registry naming |
+| `DOCKER_IMAGE_TAG` | Image tag | `latest` | Version or `latest` |
+| `DOCKER_REGISTRY_URL` | Registry URL (optional) | `https://ghcr.io` | Registry docs |
+| `DOCKER_REGISTRY_USERNAME` | Registry user | `myuser` | Registry account |
+| `DOCKER_REGISTRY_TOKEN` | Registry password/token | *(secret)* | Docker Hub / GHCR PAT |
+| `DOCKER_HOST` | Remote daemon (optional) | `ssh://ubuntu@host` | Remote Docker setup |
+
+### AWS EC2
+
+**Prerequisites:**
+- [ ] EC2 instance launched in AWS Console (DeployHub does not create it)
+- [ ] Key pair `.pem` downloaded at launch
+- [ ] Security group: inbound SSH (22) from your IP
+- [ ] App runtime on instance for backends
+
+**What DeployHub automates:**
+- EC2-specific `.env.example` (SSH + optional AWS API vars)
+- SSH key validation and connectivity test
+- OS user suggestion from AMI hint (ubuntu, ec2-user)
+- Optional public IP lookup via `EC2_INSTANCE_ID` + AWS CLI
+
+**After `init`:**
+1. AWS Console → EC2 → Security Groups → Inbound rules → SSH port 22 from My IP
+2. Copy `.env.example` → `.env`; set `SSH_KEY_PATH`, `SSH_HOST` (or `EC2_INSTANCE_ID` + AWS creds)
+3. GitHub Secrets: `SSH_HOST`, `SSH_USER`, `SSH_KEY`, plus `AWS_*` if using instance ID lookup
+4. Run `deployhub doctor`, then `git push origin main`
+
+| Variable | Description | Example | Where to get it |
+|----------|-------------|---------|-----------------|
+| `SSH_HOST` | Instance public IP/DNS | `54.123.45.67` | EC2 Console → Instances |
+| `SSH_USER` | SSH user for AMI | `ec2-user` | AMI documentation |
+| `SSH_KEY_PATH` | Path to .pem key | `~/.ssh/ec2-key.pem` | Downloaded at instance launch |
+| `EC2_INSTANCE_ID` | Instance ID (optional) | `i-0abc123...` | EC2 Console |
+| `AWS_ACCESS_KEY_ID` | AWS key for API lookup | `AKIA...` | IAM → Users → Security credentials |
+| `AWS_SECRET_ACCESS_KEY` | AWS secret | *(secret)* | Same as above |
+| `AWS_REGION` | Instance region | `us-east-1` | EC2 Console top bar |
+
+### Azure VM
+
+**Prerequisites:**
+- [ ] Azure VM created in Portal (DeployHub does not provision it)
+- [ ] NSG rule allowing inbound SSH (port 22)
+- [ ] SSH public key on the VM
+- [ ] App runtime for backends
+
+**What DeployHub automates:**
+- Azure VM `.env.example` with SSH + optional Azure API vars
+- Auto-detects subscription ID via `az` CLI if logged in
+- SSH key validation and connectivity test
+
+**After `init`:**
+1. Azure Portal → VM → Networking → allow SSH (22) from your IP
+2. Copy `.env.example` → `.env`; set `SSH_HOST`, `SSH_USER`, `SSH_KEY_PATH`
+3. For CI: add `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET` as GitHub Secrets
+4. Run `deployhub doctor`, then `git push origin main`
+
+| Variable | Description | Example | Where to get it |
+|----------|-------------|---------|-----------------|
+| `SSH_HOST` | VM public IP | `20.1.2.3` | Azure Portal → VM overview |
+| `SSH_USER` | SSH username | `azureuser` | Chosen at VM creation |
+| `SSH_KEY_PATH` | Private key path | `~/.ssh/azure.pem` | Your key file |
+| `AZURE_SUBSCRIPTION_ID` | Subscription (optional) | `uuid` | `az account show` |
+| `AZURE_RESOURCE_GROUP` | Resource group | `my-app-rg` | Portal → Resource groups |
+| `AZURE_VM_NAME` | VM name | `my-vm` | Portal → Virtual machines |
+
+### GCP VM
+
+**Prerequisites:**
+- [ ] Compute Engine VM created (DeployHub does not create it)
+- [ ] Firewall rule allowing `tcp:22` (default `default-allow-ssh` may exist)
+- [ ] SSH public key in **Metadata → SSH Keys** (GCP uses metadata keys, not launch key pairs like AWS)
+- [ ] App runtime for backends
+
+**What DeployHub automates:**
+- GCP VM `.env.example` with SSH + optional GCP API vars
+- Auto-detects project ID via `gcloud` if authenticated
+- SSH key validation and connectivity test
+
+**After `init`:**
+1. GCP Console → VPC → Firewall → ensure SSH (tcp:22) allowed from your IP
+2. Add SSH public key: Console → Compute Engine → Metadata → SSH Keys
+3. Copy `.env.example` → `.env`; set `SSH_HOST`, `SSH_USER`, `SSH_KEY_PATH`
+4. Run `deployhub doctor`, then `git push origin main`
+
+| Variable | Description | Example | Where to get it |
+|----------|-------------|---------|-----------------|
+| `SSH_HOST` | External IP | `34.56.78.90` | Compute Engine → VM instances |
+| `SSH_USER` | SSH username | `your_google_username` | GCP OS Login or metadata |
+| `SSH_KEY_PATH` | Private key path | `~/.ssh/gcp-key` | Your local key pair |
+| `SSH_SSH_PORT` | SSH connection port (optional) | `22` | Server SSH config |
+| `SSH_DEPLOY_PATH` | Remote deploy directory (optional) | `/var/www/my-app` | Your server layout |
+| `SSH_APP_NAME` | PM2 process name (backend) | `my-api` | Your choice |
+| `SSH_PORT` | App listen port (backend) | `3000` | Your app config |
+| `SSH_KEY` | Private key contents (CI only) | `-----BEGIN...` | Same key as `SSH_KEY_PATH` |
+| `GCP_PROJECT_ID` | Project ID (optional) | `my-project-123` | `gcloud config get-value project` |
+| `GCP_ZONE` | VM zone (optional) | `us-central1-a` | VM instance details |
+| `GCP_INSTANCE_NAME` | Instance name (optional) | `my-vm` | Compute Engine list |
+| `GCP_KEY_FILE` | Service account JSON (optional, CI) | `/path/to/key.json` | IAM → Service Accounts → Keys |
+
+### Kubernetes
+
+**Prerequisites:**
+- [ ] Existing Kubernetes cluster (DeployHub does not provision clusters)
+- [ ] `kubectl` installed and configured
+- [ ] Kubernetes manifests (`.yaml` or `k8s/` directory) in your repo
+- [ ] Cluster reachable from CI (kubeconfig secret or cloud auth)
+
+**What DeployHub automates:**
+- Lists `kubectl` contexts during `init` for easy selection
+- Auto-detects `~/.kube/config`
+- Complete `.env.example` for kubeconfig, context, namespace
+- Cluster connectivity test during `init`
+
+**After `init`:**
+1. Verify context: `kubectl config get-contexts`
+2. Create namespace if needed: `kubectl create namespace my-app`
+3. For private registries: create `imagePullSecret` and set `KUBE_IMAGE_PULL_SECRET`
+4. Copy `.env.example` → `.env`; add kubeconfig/auth to GitHub Secrets for CI
+5. Run `deployhub doctor`, then `git push origin main`
+
+| Variable | Description | Example | Where to get it |
+|----------|-------------|---------|-----------------|
+| `KUBECONFIG` | Path to kubeconfig | `~/.kube/config` | Default kubectl config |
+| `KUBE_CONTEXT` | Context name | `my-cluster` | `kubectl config get-contexts` |
+| `KUBE_NAMESPACE` | Target namespace | `my-app` | `kubectl get namespaces` |
+| `DOCKER_IMAGE_NAME` | Container image | `ghcr.io/org/app` | Your registry |
+| `KUBE_IMAGE_PULL_SECRET` | Pull secret name | `regcred` | `kubectl create secret docker-registry` |
+
+---
+
 ## Minimal `deployhub.config.json` examples
 
 ### Storage only — React
@@ -640,7 +841,7 @@ Prefer `deployhub init` over hand-writing config — it sets adapters, workflow,
 |---------|-----|
 | `Deploy requires storage upload` | Add at least one storage provider in config |
 | AWS / GDrive check fails in `doctor` | Run `deployhub storage add <provider>` and match GitHub Secrets |
-| SSH deploy fails | Verify `SSH_KEY` is the **private** key; user can write to deploy path |
+| SSH deploy fails | Verify `SSH_KEY_PATH` points to your private `.pem` file (or `SSH_KEY` in CI); user can write to deploy path; port 22 open |
 | Wrong output uploaded | Fix `buildOutput` in config (`dist` vs `build` vs `.next`) |
 | Tests fail in CI | Set `"pipeline": { "test": false }` temporarily, or fix tests |
 | Monorepo subfolders | Edit `buildCommand` paths in `deployhub.config.json` after init |
@@ -692,16 +893,25 @@ Add these secrets in your repository (Settings → Secrets and variables → Act
 | `DROPBOX_ACCESS_TOKEN` | Dropbox |
 | `FTP_HOST`, `FTP_USER`, `FTP_PASSWORD` | FTP storage |
 
-### Server deployment (SSH, EC2, VMs)
+### Server deployment (SSH, EC2, VMs, Docker, Kubernetes)
 
 | Secret | Used for |
 |--------|----------|
-| `SSH_HOST` | Target server hostname |
+| `SSH_HOST` | Target server hostname or IP |
 | `SSH_USER` | SSH username |
-| `SSH_KEY` | Private SSH key (PEM) |
+| `SSH_KEY_PATH` | Local path to private key (`.env` only) |
+| `SSH_KEY` | Private key contents (GitHub Actions / CI) |
+| `SSH_SSH_PORT` | SSH connection port (default 22) |
 | `SSH_DEPLOY_PATH` | Remote directory (optional if set in config) |
 | `SSH_APP_NAME` | PM2 process name for backends |
-| `SSH_PORT` | App port on server (optional) |
+| `SSH_PORT` | App port on server (backend) |
+| `EC2_INSTANCE_ID`, `AWS_*` | Optional EC2 dynamic IP lookup |
+| `AZURE_SUBSCRIPTION_ID`, `AZURE_RESOURCE_GROUP`, `AZURE_VM_NAME` | Optional Azure VM IP lookup |
+| `GCP_PROJECT_ID`, `GCP_ZONE`, `GCP_INSTANCE_NAME`, `GCP_KEY_FILE` | Optional GCP VM IP lookup |
+| `DOCKER_IMAGE_NAME`, `DOCKER_REGISTRY_*`, `DOCKER_HOST` | Docker deployment |
+| `KUBECONFIG`, `KUBE_CONTEXT`, `KUBE_NAMESPACE` | Kubernetes deployment |
+
+See [Deployment method guides](#deployment-method-guides) for full per-method variable tables with examples.
 
 ## `deployhub doctor` Output
 

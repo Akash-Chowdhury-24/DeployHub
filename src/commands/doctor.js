@@ -9,6 +9,11 @@ import { getDeploymentProvider } from '../deployment/index.js';
 import { PROVIDER_ENV_MAP } from '../utils/github-actions.js';
 import { printDoctorFooter } from '../utils/author.js';
 import { createLocalProvider } from '../storage/providers/local.js';
+import {
+  getDeploymentEnvKeys,
+  getDeploymentSecretKeys,
+} from '../deployment/deployment-env.js';
+import { testSshConnectivity, validateSshKeyForDoctor, testSshHostReachability } from '../deployment/init-helpers.js';
 
 /**
  * @typedef {{ name: string, pass: boolean, message: string }} CheckResult
@@ -48,14 +53,165 @@ function resolveBackendFramework(config) {
   return config.backend?.framework || config.framework || 'express';
 }
 
+/** @type {Set<string>} */
+const SSH_DEPLOY_TYPES = new Set(['ssh', 'ec2', 'azure-vm', 'gcp-vm']);
+
 /**
  * @param {import('../core/config.js').DeployHubConfig} config
  * @param {string} envName
+ * @param {Record<string, unknown>} envConfig
  * @returns {Promise<CheckResult[]>}
  */
-async function runBackendProcessChecks(config, envName) {
+async function runDeploymentChecks(config, envName, envConfig) {
+  const deployType = envConfig.type;
+  if (!deployType || typeof deployType !== 'string') return [];
+
+  /** @type {CheckResult[]} */
+  const checks = [];
+  const requiredKeys = getDeploymentEnvKeys(deployType, config);
+
+  checks.push(
+    await runCheck(`${deployType} env vars`, async () => {
+      const missing = requiredKeys.filter((k) => {
+        if (k === 'SSH_KEY_PATH') {
+          return !process.env.SSH_KEY_PATH && !process.env.SSH_KEY;
+        }
+        return !process.env[k];
+      });
+      if (missing.length > 0) {
+        return {
+          name: `${deployType} env vars`,
+          pass: false,
+          message: `Missing required variables: ${missing.join(', ')} — copy .env.example to .env and fill in values (see inline comments).`,
+        };
+      }
+      return {
+        name: `${deployType} env vars`,
+        pass: true,
+        message: 'All required deployment variables present',
+      };
+    })
+  );
+
+  if (SSH_DEPLOY_TYPES.has(deployType)) {
+    const host = envConfig.host || process.env.SSH_HOST;
+    const user = envConfig.user || process.env.SSH_USER;
+    const keyPath = envConfig.keyPath || process.env.SSH_KEY_PATH;
+    const sshPort = Number(process.env.SSH_SSH_PORT || envConfig.sshPort) || 22;
+
+    checks.push(
+      await runCheck('SSH key', async () => {
+        const result = await validateSshKeyForDoctor(
+          keyPath ? String(keyPath) : undefined,
+          process.env.SSH_KEY
+        );
+        return {
+          name: 'SSH key',
+          pass: result.ok,
+          message: result.message,
+        };
+      })
+    );
+
+    checks.push(
+      await runCheck('SSH host reachability', async () => {
+        if (!host) {
+          return {
+            name: 'SSH host reachability',
+            pass: false,
+            message: 'SSH_HOST is required — set it in .env to your server IP or hostname.',
+          };
+        }
+        const result = await testSshHostReachability(String(host), sshPort);
+        return {
+          name: 'SSH host reachability',
+          pass: result.ok,
+          message: result.message,
+        };
+      })
+    );
+
+    const isBackend = config.projectType === 'backend' || config.projectType === 'both';
+    if (isBackend) {
+      const backendChecks = await runBackendProcessChecks(config, envName, deployType);
+      checks.push(...backendChecks);
+    }
+  }
+
+  if (deployType === 'docker') {
+    checks.push(
+      await runCheck('Docker daemon', async () => {
+        try {
+          const provider = getDeploymentProvider('docker', config, envName);
+          await provider.testConnection();
+          return { name: 'Docker daemon', pass: true, message: 'Docker daemon reachable' };
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          return {
+            name: 'Docker daemon',
+            pass: false,
+            message: `Docker not reachable — ${msg}. Install Docker or set DOCKER_HOST for a remote daemon.`,
+          };
+        }
+      })
+    );
+  }
+
+  if (deployType === 'kubernetes') {
+    checks.push(
+      await runCheck('Kubernetes cluster', async () => {
+        try {
+          const provider = getDeploymentProvider('kubernetes', config, envName);
+          await provider.testConnection();
+          const ctx = process.env.KUBE_CONTEXT || 'current';
+          const ns = process.env.KUBE_NAMESPACE || config.project || 'default';
+          return {
+            name: 'Kubernetes cluster',
+            pass: true,
+            message: `kubectl cluster-info OK (context: ${ctx}, namespace: ${ns})`,
+          };
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          return {
+            name: 'Kubernetes cluster',
+            pass: false,
+            message: `kubectl cluster-info failed — ${msg}. Check KUBECONFIG path and KUBE_CONTEXT.`,
+          };
+        }
+      })
+    );
+  }
+
+  if (deployType === 'ec2' && process.env.EC2_INSTANCE_ID) {
+    checks.push(
+      await runCheck('EC2 API', async () => {
+        const missing = ['AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_REGION'].filter(
+          (k) => !process.env[k]
+        );
+        if (missing.length > 0) {
+          return {
+            name: 'EC2 API',
+            pass: false,
+            message: `EC2_INSTANCE_ID is set but missing: ${missing.join(', ')} — needed for dynamic IP lookup.`,
+          };
+        }
+        return { name: 'EC2 API', pass: true, message: 'AWS credentials present for EC2 lookup' };
+      })
+    );
+  }
+
+  return checks;
+}
+
+/**
+ * @param {import('../core/config.js').DeployHubConfig} config
+ * @param {string} envName
+ * @param {string} [deployType]
+ * @returns {Promise<CheckResult[]>}
+ */
+async function runBackendProcessChecks(config, envName, deployType = 'ssh') {
   const framework = resolveBackendFramework(config);
-  const provider = getDeploymentProvider('ssh', config, envName);
+  const provider = getDeploymentProvider(deployType, config, envName);
 
   if (!provider.runRemoteCheck) {
     return [];
@@ -338,27 +494,8 @@ export function registerDoctorCommand(program) {
           const env = config.environments[envName];
           if (!env) continue;
 
-          if (env.type && ['ssh', 'ec2', 'azure-vm', 'gcp-vm'].includes(env.type)) {
-            results.push(
-              await runCheck('SSH target', async () => {
-                const provider = getDeploymentProvider(env.type, config, envName);
-                await provider.testConnection();
-                const host = env.host || process.env.SSH_HOST;
-                return {
-                  name: 'SSH target',
-                  pass: true,
-                  message: `Can reach ${host || 'host'}`,
-                };
-              })
-            );
-
-            const isBackend =
-              config.projectType === 'backend' || config.projectType === 'both';
-            if (isBackend && env.type === 'ssh') {
-              const backendChecks = await runBackendProcessChecks(config, envName);
-              results.push(...backendChecks);
-            }
-          }
+          const deployChecks = await runDeploymentChecks(config, envName, env);
+          results.push(...deployChecks);
         }
 
         results.push(
@@ -405,16 +542,17 @@ export function registerDoctorCommand(program) {
           }
           for (const envName of config.deploy || []) {
             const env = config.environments[envName];
-            if (!env) continue;
-
-            if (env.type) {
-              const keys = PROVIDER_ENV_MAP[env.type] || [];
-              required.push(...keys);
-            }
+            if (!env?.type) continue;
+            required.push(...getDeploymentSecretKeys(env.type, config));
           }
 
           const unique = [...new Set(required)];
-          const missing = unique.filter((k) => !process.env[k]);
+          const missing = unique.filter((k) => {
+            if (k === 'SSH_KEY') {
+              return !process.env.SSH_KEY && !process.env.SSH_KEY_PATH;
+            }
+            return !process.env[k];
+          });
           if (missing.length > 0) {
             return {
               name: 'Secrets',
