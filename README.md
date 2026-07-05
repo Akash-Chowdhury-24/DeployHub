@@ -604,9 +604,38 @@ DeployHub supports six deployment targets. Pick based on what infrastructure you
 
 Each method below follows the same structure: **prerequisites** (before `deployhub init`), **what DeployHub automates**, **after init** (matches terminal output), and a **variable reference**.
 
+### One-time server setup (before your first deploy)
+
+SSH-based methods (SSH, EC2, Azure VM, GCP VM) require a few one-time steps on the server **before your first deploy**. DeployHub does not silently change ownership or sudo policy for you.
+
+SSH into your server once and run:
+
+```bash
+sudo mkdir -p /var/www/your-app-name
+sudo chown your-ssh-user:your-ssh-user /var/www/your-app-name
+```
+
+Replace `/var/www/your-app-name` with your actual deploy path and `your-ssh-user` with your configured `SSH_USER` (e.g. `ec2-user` on Amazon Linux, `ubuntu` on Ubuntu). Without this, DeployHub cannot write your build output — `deployhub doctor` will catch it and show the exact fix.
+
+**Frontend deploys** that auto-activate `nginx.conf` also need **passwordless sudo** for Nginx test/reload (and `cp` into `/etc/nginx/`). After installing Nginx, run `sudo visudo` and add a line like:
+
+```bash
+your-ssh-user ALL=(ALL) NOPASSWD: /usr/sbin/nginx, /bin/cp, /usr/bin/cp, /bin/systemctl, /usr/bin/systemctl
+```
+
+> **Security note:** This example grants broad privileges — unrestricted `cp` (any source/destination) and `systemctl` (any unit/action), not just Nginx. That keeps setup simple but is a significant trust boundary. For production, prefer a dedicated deploy user and a **narrow wrapper script** (e.g. `/usr/local/bin/deployhub-nginx-reload` that only copies to your project's config path and runs `nginx -t` + reload), then grant `NOPASSWD` only for that script. The line above is a starting point for dev/test servers; tighten it before production.
+
+Install Nginx if it is not already present:
+
+- **Amazon Linux / RHEL:** `sudo yum install -y nginx && sudo systemctl enable --now nginx`
+- **Ubuntu / Debian:** `sudo apt install -y nginx`
+
+DeployHub detects whether the server uses Debian-style `sites-available` or RHEL-style `conf.d` at deploy time and writes a **uniquely named** config file for your project only — it does not overwrite unrelated Nginx configs.
+
 ### SSH
 
 **Prerequisites (before `deployhub init`):**
+- [ ] Complete **[one-time server setup](#one-time-server-setup-before-your-first-deploy)** (deploy path ownership + Nginx/sudo for frontends)
 - [ ] A Linux server with SSH enabled
 - [ ] Private SSH key file (.pem/.key) and public key in `authorized_keys`
 - [ ] Port 22 open in firewall for your IP
@@ -618,6 +647,9 @@ Each method below follows the same structure: **prerequisites** (before `deployh
 - SSH key permission check (offers to `chmod 600`)
 - SSH connectivity test during `init`
 - Deploy path write-permission check during `deployhub doctor`
+- Nginx layout detection (Debian `sites-available` vs RHEL `conf.d`) at deploy time
+- Nginx config test (`nginx -t`) before reload
+- Passwordless sudo and Nginx checks during `deployhub doctor` (frontend)
 - Artifact upload, extract, app restart (PM2, gunicorn, etc.)
 
 **After `init`:**
@@ -669,6 +701,7 @@ Each method below follows the same structure: **prerequisites** (before `deployh
 ### AWS EC2
 
 **Prerequisites:**
+- [ ] Complete **[one-time server setup](#one-time-server-setup-before-your-first-deploy)** (`ec2-user` on Amazon Linux)
 - [ ] EC2 instance launched in AWS Console (DeployHub does not create it)
 - [ ] Key pair `.pem` downloaded at launch
 - [ ] Security group: inbound SSH (22) from your IP
@@ -679,6 +712,8 @@ Each method below follows the same structure: **prerequisites** (before `deployh
 - EC2-specific `.env.example` (SSH + optional AWS API vars)
 - SSH key validation and connectivity test
 - Deploy path write-permission check during `deployhub doctor`
+- Nginx layout detection and config test before reload (frontend)
+- Passwordless sudo and Nginx checks during `deployhub doctor` (frontend)
 - OS user suggestion from AMI hint (ubuntu, ec2-user)
 - Optional public IP lookup via `EC2_INSTANCE_ID` + AWS CLI
 
@@ -702,6 +737,7 @@ Each method below follows the same structure: **prerequisites** (before `deployh
 ### Azure VM
 
 **Prerequisites:**
+- [ ] Complete **[one-time server setup](#one-time-server-setup-before-your-first-deploy)** (`azureuser` or your VM login user)
 - [ ] Azure VM created in Portal (DeployHub does not provision it)
 - [ ] NSG rule allowing inbound SSH (port 22)
 - [ ] SSH public key on the VM
@@ -713,6 +749,8 @@ Each method below follows the same structure: **prerequisites** (before `deployh
 - Auto-detects subscription ID via `az` CLI if logged in
 - SSH key validation and connectivity test
 - Deploy path write-permission check during `deployhub doctor`
+- Nginx layout detection and config test before reload (frontend)
+- Passwordless sudo and Nginx checks during `deployhub doctor` (frontend)
 
 **After `init`:**
 1. Azure Portal → VM → Networking → allow SSH (22) from your IP
@@ -733,6 +771,7 @@ Each method below follows the same structure: **prerequisites** (before `deployh
 ### GCP VM
 
 **Prerequisites:**
+- [ ] Complete **[one-time server setup](#one-time-server-setup-before-your-first-deploy)** (your GCP SSH username)
 - [ ] Compute Engine VM created (DeployHub does not create it)
 - [ ] Firewall rule allowing `tcp:22` (default `default-allow-ssh` may exist)
 - [ ] SSH public key in **Metadata → SSH Keys** (GCP uses metadata keys, not launch key pairs like AWS)
@@ -744,6 +783,8 @@ Each method below follows the same structure: **prerequisites** (before `deployh
 - Auto-detects project ID via `gcloud` if authenticated
 - SSH key validation and connectivity test
 - Deploy path write-permission check during `deployhub doctor`
+- Nginx layout detection and config test before reload (frontend)
+- Passwordless sudo and Nginx checks during `deployhub doctor` (frontend)
 
 **After `init`:**
 1. GCP Console → VPC → Firewall → ensure SSH (tcp:22) allowed from your IP

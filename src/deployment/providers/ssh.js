@@ -3,7 +3,11 @@ import fs from 'fs-extra';
 import path from 'path';
 import os from 'os';
 import { createLogger } from '../../logger/index.js';
-import { getNginxSitePath } from '../../utils/nginx.js';
+import {
+  getNginxSitesAvailablePath,
+  getNginxSitesEnabledPath,
+  getNginxConfDPath,
+} from '../../utils/nginx.js';
 import { shellQuote, formatRemoteCommandFailure } from '../../utils/shell-quote.js';
 
 /** @type {Set<string>} */
@@ -242,22 +246,83 @@ export function createSshProvider(config, envName, env = process.env) {
 
   /**
    * @param {import('node-ssh').NodeSSH} ssh
+   * @param {string} remotePath
+   * @param {'f'|'d'} [kind='f']
+   */
+  async function remotePathExists(ssh, remotePath, kind = 'f') {
+    const flag = kind === 'd' ? '-d' : '-f';
+    const result = await ssh.execCommand(`test ${flag} ${sh(remotePath)} && echo yes`);
+    return result.code === 0 && result.stdout.trim() === 'yes';
+  }
+
+  /**
+   * @param {import('node-ssh').NodeSSH} ssh
+   * @param {string} command
+   */
+  async function remoteCommandExists(ssh, command) {
+    const result = await ssh.execCommand(`command -v ${sh(command)} >/dev/null 2>&1 && echo yes`);
+    return result.code === 0 && result.stdout.trim() === 'yes';
+  }
+
+  /**
+   * @param {import('node-ssh').NodeSSH} ssh
+   * @returns {Promise<'debian'|'rhel'>}
+   */
+  async function detectNginxLayout(ssh) {
+    if (await remotePathExists(ssh, '/etc/nginx/sites-available', 'd')) {
+      return 'debian';
+    }
+    return 'rhel';
+  }
+
+  /**
+   * @param {import('node-ssh').NodeSSH} ssh
+   */
+  async function reloadNginx(ssh) {
+    await exec(ssh, 'sudo systemctl reload nginx 2>/dev/null || sudo nginx -s reload');
+  }
+
+  /**
+   * @param {import('node-ssh').NodeSSH} ssh
    * @param {string} targetPath
    */
   async function setupNginx(ssh, targetPath) {
-    const sitePath = getNginxSitePath(config.project);
     const nginxConfRemote = `${targetPath}/nginx.conf`;
 
-    await exec(
-      ssh,
-      `sudo cp ${sh(nginxConfRemote)} ${sh(sitePath)} 2>/dev/null || sudo cp ${sh(`${targetPath}/nginx.conf`)} ${sh(sitePath)}`
+    if (!(await remoteCommandExists(ssh, 'nginx'))) {
+      throw new Error(
+        'Nginx is not installed on the server. Install it first (e.g. sudo yum install nginx on Amazon Linux, or sudo apt install nginx on Ubuntu), then re-run deploy.'
+      );
+    }
+
+    if (!(await remotePathExists(ssh, nginxConfRemote))) {
+      throw new Error(
+        `Nginx config not found at ${nginxConfRemote} — artifact may be missing nginx.conf.`
+      );
+    }
+
+    const layout = await detectNginxLayout(ssh);
+    log.info(
+      layout === 'debian'
+        ? 'Detected Nginx layout: Debian/Ubuntu (sites-available)'
+        : 'Detected Nginx layout: RHEL/Amazon Linux (conf.d)'
     );
-    await exec(
-      ssh,
-      `sudo ln -sf ${sh(sitePath)} ${sh(`/etc/nginx/sites-enabled/${path.basename(sitePath)}`)}`
-    );
+
+    if (layout === 'debian') {
+      const sitePath = getNginxSitesAvailablePath(config.project);
+      const enabledPath = getNginxSitesEnabledPath(config.project);
+      await exec(ssh, `sudo cp ${sh(nginxConfRemote)} ${sh(sitePath)}`);
+      await exec(ssh, `sudo ln -sf ${sh(sitePath)} ${sh(enabledPath)}`);
+      log.info(`Nginx config installed: ${sitePath}`);
+    } else {
+      const confPath = getNginxConfDPath(config.project);
+      await exec(ssh, `sudo cp ${sh(nginxConfRemote)} ${sh(confPath)}`);
+      log.info(`Nginx config installed: ${confPath}`);
+    }
+
     await exec(ssh, 'sudo nginx -t');
-    await exec(ssh, 'sudo systemctl reload nginx');
+    await reloadNginx(ssh);
+    log.success('Nginx config tested and reloaded');
   }
 
   /**

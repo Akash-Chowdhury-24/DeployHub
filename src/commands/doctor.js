@@ -18,6 +18,7 @@ import {
   buildDeployPathWriteTestCommand,
   formatDeployPathWriteFailure,
 } from '../utils/shell-quote.js';
+import { formatPasswordlessSudoGuidance } from '../utils/nginx.js';
 
 /**
  * @typedef {{ name: string, pass: boolean, message: string }} CheckResult
@@ -80,6 +81,16 @@ function resolveSshDeployPaths(config, envConfig) {
   }
 
   return [...new Set(paths.filter(Boolean))];
+}
+
+/**
+ * @param {import('../core/config.js').DeployHubConfig} config
+ * @returns {boolean}
+ */
+function needsNginxActivationForDeploy(config) {
+  if (config.projectType === 'backend') return false;
+  if (config.projectType === 'frontend' && config.framework === 'nextjs') return false;
+  return true;
 }
 
 /**
@@ -202,6 +213,149 @@ async function runDeploymentChecks(config, envName, envConfig) {
             name: checkName,
             pass: false,
             message: formatDeployPathWriteFailure(deployPath, sshUser, result.message),
+          };
+        })
+      );
+    }
+
+    if (needsNginxActivationForDeploy(config)) {
+      checks.push(
+        await runCheck('Nginx installed', async () => {
+          if (!host || !user) {
+            return {
+              name: 'Nginx installed',
+              pass: false,
+              message: 'SSH_HOST and SSH_USER are required to check Nginx on the server.',
+            };
+          }
+          if (!keyPath && !process.env.SSH_KEY) {
+            return {
+              name: 'Nginx installed',
+              pass: false,
+              message: 'SSH_KEY_PATH or SSH_KEY is required to check Nginx on the server.',
+            };
+          }
+
+          const provider = getDeploymentProvider(deployType, config, envName);
+          if (!provider.runRemoteCheck) {
+            return {
+              name: 'Nginx installed',
+              pass: false,
+              message: 'Deploy provider does not support remote checks.',
+            };
+          }
+
+          const result = await provider.runRemoteCheck('command -v nginx >/dev/null 2>&1 && echo yes');
+          if (result.pass && result.message.includes('yes')) {
+            return { name: 'Nginx installed', pass: true, message: 'Nginx installed on server' };
+          }
+          return {
+            name: 'Nginx installed',
+            pass: false,
+            message:
+              'Nginx not found on server — install it first (e.g. sudo yum install nginx on Amazon Linux, or sudo apt install nginx on Ubuntu).',
+          };
+        })
+      );
+
+      checks.push(
+        await runCheck('Passwordless sudo', async () => {
+          if (!host || !user) {
+            return {
+              name: 'Passwordless sudo',
+              pass: false,
+              message: 'SSH_HOST and SSH_USER are required for sudo check.',
+            };
+          }
+          if (!keyPath && !process.env.SSH_KEY) {
+            return {
+              name: 'Passwordless sudo',
+              pass: false,
+              message: 'SSH_KEY_PATH or SSH_KEY is required for sudo check.',
+            };
+          }
+
+          const provider = getDeploymentProvider(deployType, config, envName);
+          if (!provider.runRemoteCheck) {
+            return {
+              name: 'Passwordless sudo',
+              pass: false,
+              message: 'Deploy provider does not support remote checks.',
+            };
+          }
+
+          const result = await provider.runRemoteCheck('sudo -n true');
+          if (result.pass) {
+            return {
+              name: 'Passwordless sudo',
+              pass: true,
+              message: 'Non-interactive sudo available (required for Nginx config activation)',
+            };
+          }
+          return {
+            name: 'Passwordless sudo',
+            pass: false,
+            message: formatPasswordlessSudoGuidance(sshUser),
+          };
+        })
+      );
+
+      checks.push(
+        await runCheck('Nginx sudo access', async () => {
+          if (!host || !user) {
+            return {
+              name: 'Nginx sudo access',
+              pass: false,
+              message: 'SSH_HOST and SSH_USER are required for Nginx sudo check.',
+            };
+          }
+          if (!keyPath && !process.env.SSH_KEY) {
+            return {
+              name: 'Nginx sudo access',
+              pass: false,
+              message: 'SSH_KEY_PATH or SSH_KEY is required for Nginx sudo check.',
+            };
+          }
+
+          const provider = getDeploymentProvider(deployType, config, envName);
+          if (!provider.runRemoteCheck) {
+            return {
+              name: 'Nginx sudo access',
+              pass: false,
+              message: 'Deploy provider does not support remote checks.',
+            };
+          }
+
+          const nginxInstalled = await provider.runRemoteCheck('command -v nginx >/dev/null 2>&1 && echo yes');
+          if (!nginxInstalled.pass || !nginxInstalled.message.includes('yes')) {
+            return {
+              name: 'Nginx sudo access',
+              pass: false,
+              message: 'Skipped — install Nginx first.',
+            };
+          }
+
+          const sudoOk = await provider.runRemoteCheck('sudo -n true');
+          if (!sudoOk.pass) {
+            return {
+              name: 'Nginx sudo access',
+              pass: false,
+              message: 'Skipped — configure passwordless sudo first.',
+            };
+          }
+
+          const result = await provider.runRemoteCheck('sudo -n nginx -t 2>&1');
+          if (result.pass) {
+            return {
+              name: 'Nginx sudo access',
+              pass: true,
+              message: 'sudo nginx -t OK (can test config before reload)',
+            };
+          }
+          return {
+            name: 'Nginx sudo access',
+            pass: false,
+            message: `sudo nginx -t failed — ${result.message}. Check Nginx install and sudoers (see README one-time server setup).`,
           };
         })
       );
