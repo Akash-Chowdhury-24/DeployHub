@@ -71,7 +71,7 @@ export function registerDeployCommand(program) {
 
       const { failure } = await runPipeline(stages, { config, cwd, state });
       if (failure) {
-        console.error(chalk.red(`Deploy failed: ${failure.message}`));
+        console.error(chalk.red(failure.message));
         process.exit(1);
       }
 

@@ -4,6 +4,7 @@ import path from 'path';
 import os from 'os';
 import { createLogger } from '../../logger/index.js';
 import { getNginxSitePath } from '../../utils/nginx.js';
+import { shellQuote, formatRemoteCommandFailure } from '../../utils/shell-quote.js';
 
 /** @type {Set<string>} */
 const NODE_FRAMEWORKS = new Set(['express', 'nestjs', 'fastify', 'koa', 'nextjs', 'node']);
@@ -11,6 +12,8 @@ const NODE_FRAMEWORKS = new Set(['express', 'nestjs', 'fastify', 'koa', 'nextjs'
 const PYTHON_FRAMEWORKS = new Set(['fastapi', 'django', 'flask', 'python']);
 /** @type {Set<string>} */
 const PHP_FRAMEWORKS = new Set(['laravel', 'symfony', 'php']);
+
+const sh = shellQuote;
 
 /**
  * @param {import('../../core/config.js').DeployHubConfig} config
@@ -88,7 +91,14 @@ export function createSshProvider(config, envName, env = process.env) {
     log.info(`$ ${command}`);
     const result = await ssh.execCommand(command);
     if (result.code !== 0 && result.code !== null) {
-      log.warn(`Command exited with code ${result.code}: ${result.stderr || result.stdout}`);
+      const message = formatRemoteCommandFailure(
+        command,
+        result.code,
+        result.stderr,
+        result.stdout
+      );
+      log.error(message);
+      throw new Error(message);
     }
     return result;
   }
@@ -123,26 +133,27 @@ export function createSshProvider(config, envName, env = process.env) {
   async function runBackendStartSequence(ssh, targetPath) {
     const framework = resolveFramework();
     const startCommand = resolveStartCommand();
+    const dir = sh(targetPath);
 
     if (NODE_FRAMEWORKS.has(framework)) {
-      await exec(ssh, `cd ${targetPath} && npm install --production`);
+      await exec(ssh, `cd ${dir} && npm install --production`);
       const start = startCommand || 'npm start';
       if (start === 'npm start') {
         await exec(
           ssh,
-          `cd ${targetPath} && pm2 restart ${appName} || pm2 start npm --name "${appName}" -- start`
+          `cd ${dir} && pm2 restart ${sh(appName)} || pm2 start npm --name ${sh(appName)} -- start`
         );
       } else if (start.startsWith('npm run ')) {
         const script = start.replace('npm run ', '');
         await exec(
           ssh,
-          `cd ${targetPath} && pm2 restart ${appName} || pm2 start npm --name "${appName}" -- run ${script}`
+          `cd ${dir} && pm2 restart ${sh(appName)} || pm2 start npm --name ${sh(appName)} -- run ${script}`
         );
       } else {
         const [cmd, ...args] = start.split(' ');
         await exec(
           ssh,
-          `cd ${targetPath} && pm2 restart ${appName} || pm2 start ${cmd} --name "${appName}" -- ${args.join(' ')}`
+          `cd ${dir} && pm2 restart ${sh(appName)} || pm2 start ${cmd} --name ${sh(appName)} -- ${args.join(' ')}`
         );
       }
       await exec(ssh, 'pm2 save');
@@ -150,15 +161,15 @@ export function createSshProvider(config, envName, env = process.env) {
     }
 
     if (PYTHON_FRAMEWORKS.has(framework)) {
-      await exec(ssh, `cd ${targetPath} && pip install -r requirements.txt`);
+      await exec(ssh, `cd ${dir} && pip install -r requirements.txt`);
       if (framework === 'django') {
-        await exec(ssh, `cd ${targetPath} && python manage.py migrate`);
+        await exec(ssh, `cd ${dir} && python manage.py migrate`);
       }
       if (framework === 'fastapi') {
         await exec(ssh, 'pkill uvicorn || true');
         await exec(
           ssh,
-          `cd ${targetPath} && nohup uvicorn main:app --host 0.0.0.0 --port ${port} > app.log 2>&1 &`
+          `cd ${dir} && nohup uvicorn main:app --host 0.0.0.0 --port ${port} > app.log 2>&1 &`
         );
       } else {
         await exec(ssh, 'pkill gunicorn || true');
@@ -166,17 +177,17 @@ export function createSshProvider(config, envName, env = process.env) {
           framework === 'django' ? 'config.wsgi:application' : 'app:app';
         await exec(
           ssh,
-          `cd ${targetPath} && nohup gunicorn ${appTarget} --bind 0.0.0.0:${port} --daemon`
+          `cd ${dir} && nohup gunicorn ${appTarget} --bind 0.0.0.0:${port} --daemon`
         );
       }
       return;
     }
 
     if (PHP_FRAMEWORKS.has(framework)) {
-      await exec(ssh, `cd ${targetPath} && composer install --no-dev`);
+      await exec(ssh, `cd ${dir} && composer install --no-dev`);
       if (framework === 'laravel') {
-        await exec(ssh, `cd ${targetPath} && php artisan migrate --force`);
-        await exec(ssh, `cd ${targetPath} && php artisan config:cache`);
+        await exec(ssh, `cd ${dir} && php artisan migrate --force`);
+        await exec(ssh, `cd ${dir} && php artisan config:cache`);
       }
       await exec(ssh, 'sudo systemctl restart php8.2-fpm');
       await exec(ssh, 'sudo systemctl reload nginx');
@@ -184,47 +195,47 @@ export function createSshProvider(config, envName, env = process.env) {
     }
 
     if (framework === 'spring' || framework === 'java') {
-      await exec(ssh, `cd ${targetPath} && pkill -f "*.jar" || true`);
+      await exec(ssh, `cd ${dir} && pkill -f "*.jar" || true`);
       await exec(
         ssh,
-        `cd ${targetPath} && nohup java -jar target/*.jar > app.log 2>&1 &`
+        `cd ${dir} && nohup java -jar target/*.jar > app.log 2>&1 &`
       );
       return;
     }
 
     if (framework === 'go') {
-      await exec(ssh, `cd ${targetPath} && pkill ${appName} || true`);
+      await exec(ssh, `cd ${dir} && pkill ${sh(appName)} || true`);
       await exec(
         ssh,
-        `cd ${targetPath} && nohup ./bin/app > app.log 2>&1 &`
+        `cd ${dir} && nohup ./bin/app > app.log 2>&1 &`
       );
       return;
     }
 
     if (framework === 'dotnet') {
-      await exec(ssh, `cd ${targetPath} && pkill -f "dotnet" || true`);
+      await exec(ssh, `cd ${dir} && pkill -f "dotnet" || true`);
       const dll = startCommand?.replace('dotnet ', '') || 'App.dll';
       await exec(
         ssh,
-        `cd ${targetPath} && nohup dotnet ${dll} > app.log 2>&1 &`
+        `cd ${dir} && nohup dotnet ${dll} > app.log 2>&1 &`
       );
       return;
     }
 
     if (framework === 'rails') {
-      await exec(ssh, `cd ${targetPath} && bundle install --deployment`);
-      await exec(ssh, `cd ${targetPath} && pkill puma || true`);
+      await exec(ssh, `cd ${dir} && bundle install --deployment`);
+      await exec(ssh, `cd ${dir} && pkill puma || true`);
       await exec(
         ssh,
-        `cd ${targetPath} && nohup bundle exec puma -p ${port} > app.log 2>&1 &`
+        `cd ${dir} && nohup bundle exec puma -p ${port} > app.log 2>&1 &`
       );
       return;
     }
 
-    await exec(ssh, `cd ${targetPath} && npm install --production`);
+    await exec(ssh, `cd ${dir} && npm install --production`);
     await exec(
       ssh,
-      `cd ${targetPath} && pm2 restart ${appName} || pm2 start npm --name "${appName}" -- start`
+      `cd ${dir} && pm2 restart ${sh(appName)} || pm2 start npm --name ${sh(appName)} -- start`
     );
     await exec(ssh, 'pm2 save');
   }
@@ -239,11 +250,11 @@ export function createSshProvider(config, envName, env = process.env) {
 
     await exec(
       ssh,
-      `sudo cp ${nginxConfRemote} ${sitePath} 2>/dev/null || sudo cp ${targetPath}/nginx.conf ${sitePath}`
+      `sudo cp ${sh(nginxConfRemote)} ${sh(sitePath)} 2>/dev/null || sudo cp ${sh(`${targetPath}/nginx.conf`)} ${sh(sitePath)}`
     );
     await exec(
       ssh,
-      `sudo ln -sf ${sitePath} /etc/nginx/sites-enabled/${path.basename(sitePath)}`
+      `sudo ln -sf ${sh(sitePath)} ${sh(`/etc/nginx/sites-enabled/${path.basename(sitePath)}`)}`
     );
     await exec(ssh, 'sudo nginx -t');
     await exec(ssh, 'sudo systemctl reload nginx');
@@ -255,8 +266,8 @@ export function createSshProvider(config, envName, env = process.env) {
    * @param {string} targetPath
    */
   async function extractToPath(ssh, remoteZip, targetPath) {
-    await exec(ssh, `mkdir -p ${targetPath}`);
-    await exec(ssh, `unzip -o ${remoteZip} -d ${targetPath}`);
+    await exec(ssh, `mkdir -p ${sh(targetPath)}`);
+    await exec(ssh, `unzip -o ${sh(remoteZip)} -d ${sh(targetPath)}`);
   }
 
   /**
@@ -276,19 +287,19 @@ export function createSshProvider(config, envName, env = process.env) {
 
       if (projectType === 'both') {
         const remoteStaging = `/tmp/deployhub-staging-${Date.now()}`;
-        await exec(ssh, `mkdir -p ${remoteStaging}`);
-        await exec(ssh, `unzip -o ${remoteZip} -d ${remoteStaging}`);
+        await exec(ssh, `mkdir -p ${sh(remoteStaging)}`);
+        await exec(ssh, `unzip -o ${sh(remoteZip)} -d ${sh(remoteStaging)}`);
 
-        await exec(ssh, `mkdir -p ${frontendDeployPath}`);
+        await exec(ssh, `mkdir -p ${sh(frontendDeployPath)}`);
         await exec(
           ssh,
-          `rsync -a ${remoteStaging}/ ${frontendDeployPath}/ --exclude backend || cp -r ${remoteStaging}/* ${frontendDeployPath}/`
+          `rsync -a ${sh(remoteStaging)}/ ${sh(frontendDeployPath)}/ --exclude backend || cp -r ${sh(remoteStaging)}/* ${sh(frontendDeployPath)}/`
         );
 
-        await exec(ssh, `mkdir -p ${backendDeployPath}`);
+        await exec(ssh, `mkdir -p ${sh(backendDeployPath)}`);
         await exec(
           ssh,
-          `rsync -a ${remoteStaging}/backend/ ${backendDeployPath}/ || cp -r ${remoteStaging}/backend/* ${backendDeployPath}/`
+          `rsync -a ${sh(remoteStaging)}/backend/ ${sh(backendDeployPath)}/ || cp -r ${sh(remoteStaging)}/backend/* ${sh(backendDeployPath)}/`
         );
 
         if (await remoteFileExists(ssh, `${frontendDeployPath}/nginx.conf`)) {
@@ -296,7 +307,7 @@ export function createSshProvider(config, envName, env = process.env) {
         }
 
         await runBackendStartSequence(ssh, backendDeployPath);
-        await exec(ssh, `rm -rf ${remoteStaging}`);
+        await exec(ssh, `rm -rf ${sh(remoteStaging)}`);
       } else if (projectType === 'backend') {
         log.info(`Backend deploy path: ${deployPath}`);
         await extractToPath(ssh, remoteZip, deployPath);
@@ -313,7 +324,7 @@ export function createSshProvider(config, envName, env = process.env) {
         }
       }
 
-      await exec(ssh, `rm -f ${remoteZip}`);
+      await exec(ssh, `rm -f ${sh(remoteZip)}`);
       log.success('Deployment complete');
     } finally {
       ssh.dispose();
@@ -325,8 +336,8 @@ export function createSshProvider(config, envName, env = process.env) {
    * @param {string} remotePath
    */
   async function remoteFileExists(ssh, remotePath) {
-    const result = await ssh.execCommand(`test -f ${remotePath} && echo yes`);
-    return result.stdout.trim() === 'yes';
+    const result = await ssh.execCommand(`test -f ${sh(remotePath)} && echo yes`);
+    return result.code === 0 && result.stdout.trim() === 'yes';
   }
 
   async function rollback(artifactDir) {
@@ -339,7 +350,7 @@ export function createSshProvider(config, envName, env = process.env) {
 
     const ssh = await connect();
     try {
-      const result = await ssh.execCommand(`curl -sf -o /dev/null -w "%{http_code}" "${url}"`);
+      const result = await ssh.execCommand(`curl -sf -o /dev/null -w "%{http_code}" ${sh(url)}`);
       return result.stdout.trim().startsWith('2');
     } finally {
       ssh.dispose();

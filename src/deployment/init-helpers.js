@@ -6,6 +6,7 @@ import { execa } from 'execa';
 import chalk from 'chalk';
 import inquirer from 'inquirer';
 import { NodeSSH } from 'node-ssh';
+import { toKebabCase } from '../utils/shell-quote.js';
 
 /** @type {Record<string, string>} */
 export const OS_USER_DEFAULTS = {
@@ -327,6 +328,87 @@ export async function testKubeConnectivity(kubeconfig, context) {
       message: `kubectl cluster-info failed — ${msg}. Check KUBECONFIG path and KUBE_CONTEXT name.`,
     };
   }
+}
+
+/**
+ * @param {string} value
+ * @param {string} label
+ * @returns {Promise<string>}
+ */
+export async function confirmValueIfContainsSpaces(value, label) {
+  if (!/\s/.test(value)) return value;
+
+  const suggested = toKebabCase(value);
+  console.log(chalk.yellow(`\n  ⚠ Your ${label} contains spaces: "${value}"`));
+  console.log(
+    chalk.gray(
+      `  Spaces in paths can cause shell issues on the server. Suggested: "${suggested || value.replace(/\s+/g, '-')}"`
+    )
+  );
+
+  const { choice } = await inquirer.prompt([
+    {
+      type: 'list',
+      name: 'choice',
+      message: 'How would you like to proceed?',
+      choices: [
+        {
+          name: `Use suggested: ${suggested || value.replace(/\s+/g, '-')}`,
+          value: 'suggested',
+        },
+        { name: `Keep original: ${value}`, value: 'keep' },
+        { name: 'Enter a different value', value: 'custom' },
+      ],
+    },
+  ]);
+
+  if (choice === 'suggested') {
+    return suggested || value.replace(/\s+/g, '-');
+  }
+  if (choice === 'keep') {
+    return value;
+  }
+
+  const { custom } = await inquirer.prompt([
+    {
+      type: 'input',
+      name: 'custom',
+      message: `${label}:`,
+      default: suggested || value.replace(/\s+/g, '-'),
+    },
+  ]);
+  return custom;
+}
+
+/**
+ * @param {Record<string, string>} sshAnswers
+ * @param {'frontend'|'backend'|'both'} projectType
+ * @returns {Promise<Record<string, string>>}
+ */
+export async function resolveDeployPathsWithSpaceWarning(sshAnswers, projectType) {
+  if (projectType !== 'both' && sshAnswers.deployPath) {
+    sshAnswers.deployPath = await confirmValueIfContainsSpaces(
+      sshAnswers.deployPath,
+      'deploy path'
+    );
+  }
+
+  if (projectType === 'both') {
+    if (sshAnswers.frontendDeployPath) {
+      sshAnswers.frontendDeployPath = await confirmValueIfContainsSpaces(
+        sshAnswers.frontendDeployPath,
+        'frontend deploy path'
+      );
+    }
+    if (sshAnswers.backendDeployPath) {
+      sshAnswers.backendDeployPath = await confirmValueIfContainsSpaces(
+        sshAnswers.backendDeployPath,
+        'backend deploy path'
+      );
+    }
+  }
+
+  return sshAnswers;
 }
 
 /**

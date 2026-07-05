@@ -610,20 +610,23 @@ Each method below follows the same structure: **prerequisites** (before `deployh
 - [ ] A Linux server with SSH enabled
 - [ ] Private SSH key file (.pem/.key) and public key in `authorized_keys`
 - [ ] Port 22 open in firewall for your IP
+- [ ] Deploy directory writable by your SSH user (e.g. `sudo mkdir -p /var/www/my-app && sudo chown ubuntu:ubuntu /var/www/my-app` — `/var/www` is root-owned on most fresh Linux images)
 - [ ] App runtime on server (Node.js, Python, etc.) for backends
 
 **What DeployHub automates:**
 - Complete `.env.example` with commented variables
 - SSH key permission check (offers to `chmod 600`)
 - SSH connectivity test during `init`
+- Deploy path write-permission check during `deployhub doctor`
 - Artifact upload, extract, app restart (PM2, gunicorn, etc.)
 
 **After `init`:**
 1. Ensure port 22 is open in your server firewall
-2. Copy `.env.example` → `.env`; set `SSH_HOST`, `SSH_USER`, `SSH_KEY_PATH`
-3. Add GitHub Secrets: `SSH_HOST`, `SSH_USER`, `SSH_KEY` (paste private key for CI)
-4. Run `deployhub doctor`
-5. `git push origin main`
+2. Ensure your deploy directory exists and is owned by your SSH user (see prerequisite above if `deployhub doctor` reports permission denied)
+3. Copy `.env.example` → `.env`; set `SSH_HOST`, `SSH_USER`, `SSH_KEY_PATH`
+4. Add GitHub Secrets: `SSH_HOST`, `SSH_USER`, `SSH_KEY` (paste private key for CI)
+5. Run `deployhub doctor`
+6. `git push origin main`
 
 | Variable | Description | Example | Where to get it |
 |----------|-------------|---------|-----------------|
@@ -669,19 +672,22 @@ Each method below follows the same structure: **prerequisites** (before `deployh
 - [ ] EC2 instance launched in AWS Console (DeployHub does not create it)
 - [ ] Key pair `.pem` downloaded at launch
 - [ ] Security group: inbound SSH (22) from your IP
+- [ ] Deploy directory writable by your SSH user (e.g. `sudo mkdir -p /var/www/my-app && sudo chown ec2-user:ec2-user /var/www/my-app` — `/var/www` is root-owned on Amazon Linux by default)
 - [ ] App runtime on instance for backends
 
 **What DeployHub automates:**
 - EC2-specific `.env.example` (SSH + optional AWS API vars)
 - SSH key validation and connectivity test
+- Deploy path write-permission check during `deployhub doctor`
 - OS user suggestion from AMI hint (ubuntu, ec2-user)
 - Optional public IP lookup via `EC2_INSTANCE_ID` + AWS CLI
 
 **After `init`:**
 1. AWS Console → EC2 → Security Groups → Inbound rules → SSH port 22 from My IP
-2. Copy `.env.example` → `.env`; set `SSH_KEY_PATH`, `SSH_HOST` (or `EC2_INSTANCE_ID` + AWS creds)
-3. GitHub Secrets: `SSH_HOST`, `SSH_USER`, `SSH_KEY`, plus `AWS_*` if using instance ID lookup
-4. Run `deployhub doctor`, then `git push origin main`
+2. Ensure your deploy directory exists and is owned by your SSH user (see prerequisite above if `deployhub doctor` reports permission denied)
+3. Copy `.env.example` → `.env`; set `SSH_KEY_PATH`, `SSH_HOST` (or `EC2_INSTANCE_ID` + AWS creds)
+4. GitHub Secrets: `SSH_HOST`, `SSH_USER`, `SSH_KEY`, plus `AWS_*` if using instance ID lookup
+5. Run `deployhub doctor`, then `git push origin main`
 
 | Variable | Description | Example | Where to get it |
 |----------|-------------|---------|-----------------|
@@ -699,18 +705,21 @@ Each method below follows the same structure: **prerequisites** (before `deployh
 - [ ] Azure VM created in Portal (DeployHub does not provision it)
 - [ ] NSG rule allowing inbound SSH (port 22)
 - [ ] SSH public key on the VM
+- [ ] Deploy directory writable by your SSH user (e.g. `sudo mkdir -p /var/www/my-app && sudo chown azureuser:azureuser /var/www/my-app`)
 - [ ] App runtime for backends
 
 **What DeployHub automates:**
 - Azure VM `.env.example` with SSH + optional Azure API vars
 - Auto-detects subscription ID via `az` CLI if logged in
 - SSH key validation and connectivity test
+- Deploy path write-permission check during `deployhub doctor`
 
 **After `init`:**
 1. Azure Portal → VM → Networking → allow SSH (22) from your IP
-2. Copy `.env.example` → `.env`; set `SSH_HOST`, `SSH_USER`, `SSH_KEY_PATH`
-3. For CI: add `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET` as GitHub Secrets
-4. Run `deployhub doctor`, then `git push origin main`
+2. Ensure your deploy directory exists and is owned by your SSH user (see prerequisite above if `deployhub doctor` reports permission denied)
+3. Copy `.env.example` → `.env`; set `SSH_HOST`, `SSH_USER`, `SSH_KEY_PATH`
+4. For CI: add `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET` as GitHub Secrets
+5. Run `deployhub doctor`, then `git push origin main`
 
 | Variable | Description | Example | Where to get it |
 |----------|-------------|---------|-----------------|
@@ -727,18 +736,21 @@ Each method below follows the same structure: **prerequisites** (before `deployh
 - [ ] Compute Engine VM created (DeployHub does not create it)
 - [ ] Firewall rule allowing `tcp:22` (default `default-allow-ssh` may exist)
 - [ ] SSH public key in **Metadata → SSH Keys** (GCP uses metadata keys, not launch key pairs like AWS)
+- [ ] Deploy directory writable by your SSH user (e.g. `sudo mkdir -p /var/www/my-app && sudo chown $USER:$USER /var/www/my-app`)
 - [ ] App runtime for backends
 
 **What DeployHub automates:**
 - GCP VM `.env.example` with SSH + optional GCP API vars
 - Auto-detects project ID via `gcloud` if authenticated
 - SSH key validation and connectivity test
+- Deploy path write-permission check during `deployhub doctor`
 
 **After `init`:**
 1. GCP Console → VPC → Firewall → ensure SSH (tcp:22) allowed from your IP
 2. Add SSH public key: Console → Compute Engine → Metadata → SSH Keys
-3. Copy `.env.example` → `.env`; set `SSH_HOST`, `SSH_USER`, `SSH_KEY_PATH`
-4. Run `deployhub doctor`, then `git push origin main`
+3. Ensure your deploy directory exists and is owned by your SSH user (see prerequisite above if `deployhub doctor` reports permission denied)
+4. Copy `.env.example` → `.env`; set `SSH_HOST`, `SSH_USER`, `SSH_KEY_PATH`
+5. Run `deployhub doctor`, then `git push origin main`
 
 | Variable | Description | Example | Where to get it |
 |----------|-------------|---------|-----------------|

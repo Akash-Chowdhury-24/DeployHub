@@ -14,6 +14,10 @@ import {
   getDeploymentSecretKeys,
 } from '../deployment/deployment-env.js';
 import { testSshConnectivity, validateSshKeyForDoctor, testSshHostReachability } from '../deployment/init-helpers.js';
+import {
+  buildDeployPathWriteTestCommand,
+  formatDeployPathWriteFailure,
+} from '../utils/shell-quote.js';
 
 /**
  * @typedef {{ name: string, pass: boolean, message: string }} CheckResult
@@ -55,6 +59,28 @@ function resolveBackendFramework(config) {
 
 /** @type {Set<string>} */
 const SSH_DEPLOY_TYPES = new Set(['ssh', 'ec2', 'azure-vm', 'gcp-vm']);
+
+/**
+ * @param {import('../core/config.js').DeployHubConfig} config
+ * @param {Record<string, unknown>} envConfig
+ * @returns {string[]}
+ */
+function resolveSshDeployPaths(config, envConfig) {
+  /** @type {string[]} */
+  const paths = [];
+
+  if (config.projectType === 'both') {
+    if (envConfig.frontendDeployPath) paths.push(String(envConfig.frontendDeployPath));
+    if (envConfig.backendDeployPath) paths.push(String(envConfig.backendDeployPath));
+    else if (envConfig.path) paths.push(String(envConfig.path));
+  } else {
+    const deployPath =
+      envConfig.deployPath || envConfig.path || process.env.SSH_DEPLOY_PATH;
+    if (deployPath) paths.push(String(deployPath));
+  }
+
+  return [...new Set(paths.filter(Boolean))];
+}
 
 /**
  * @param {import('../core/config.js').DeployHubConfig} config
@@ -130,6 +156,56 @@ async function runDeploymentChecks(config, envName, envConfig) {
         };
       })
     );
+
+    const deployPaths = resolveSshDeployPaths(config, envConfig);
+    const sshUser = String(user || process.env.SSH_USER || 'your-user');
+
+    for (const deployPath of deployPaths) {
+      const checkName = `Deploy path write (${deployPath})`;
+      checks.push(
+        await runCheck(checkName, async () => {
+          if (!host || !user) {
+            return {
+              name: checkName,
+              pass: false,
+              message: 'SSH_HOST and SSH_USER are required for deploy path write test.',
+            };
+          }
+          if (!keyPath && !process.env.SSH_KEY) {
+            return {
+              name: checkName,
+              pass: false,
+              message: 'SSH_KEY_PATH or SSH_KEY is required for deploy path write test.',
+            };
+          }
+
+          const provider = getDeploymentProvider(deployType, config, envName);
+          if (!provider.runRemoteCheck) {
+            return {
+              name: checkName,
+              pass: false,
+              message: 'Deploy provider does not support remote checks.',
+            };
+          }
+
+          const command = buildDeployPathWriteTestCommand(deployPath);
+          const result = await provider.runRemoteCheck(command);
+          if (result.pass) {
+            return {
+              name: checkName,
+              pass: true,
+              message: `Write access OK for ${deployPath}`,
+            };
+          }
+
+          return {
+            name: checkName,
+            pass: false,
+            message: formatDeployPathWriteFailure(deployPath, sshUser, result.message),
+          };
+        })
+      );
+    }
 
     const isBackend = config.projectType === 'backend' || config.projectType === 'both';
     if (isBackend) {

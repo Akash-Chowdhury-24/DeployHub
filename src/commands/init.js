@@ -27,6 +27,7 @@ import {
   SSH_BASED,
 } from '../deployment/init-prompts.js';
 import { printDeploymentNextSteps } from '../deployment/deployment-env.js';
+import { confirmValueIfContainsSpaces } from '../deployment/init-helpers.js';
 
 const FRONTEND_CHOICES = [
   { name: 'React', value: 'react' },
@@ -221,7 +222,7 @@ export function registerInitCommand(program) {
       const defaultName = path.basename(cwd) || 'my-app';
       const cliSource = DEFAULT_NPM_CLI_SOURCE;
 
-      const { projectName } = await inquirer.prompt([
+      let { projectName } = await inquirer.prompt([
         {
           type: 'input',
           name: 'projectName',
@@ -229,6 +230,8 @@ export function registerInitCommand(program) {
           default: defaultName,
         },
       ]);
+
+      projectName = await confirmValueIfContainsSpaces(projectName, 'project name');
 
       const { projectType } = await inquirer.prompt([
         {

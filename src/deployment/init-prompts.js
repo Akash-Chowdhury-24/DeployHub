@@ -7,6 +7,7 @@ import {
   detectAzureSubscriptionId,
   detectGcpProjectId,
   runSshInitValidation,
+  resolveDeployPathsWithSpaceWarning,
   testKubeConnectivity,
   getDeployTypeLabel,
 } from './init-helpers.js';
@@ -327,6 +328,7 @@ async function promptSshBasedDeployment(base, projectName, projectType, backendC
   });
 
   const sshAnswers = await inquirer.prompt(questions);
+  await resolveDeployPathsWithSpaceWarning(sshAnswers, projectType);
 
   await runSshInitValidation({
     host: sshAnswers.host,
