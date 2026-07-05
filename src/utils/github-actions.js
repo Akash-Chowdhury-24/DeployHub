@@ -208,6 +208,56 @@ function getBackendSetupSteps(config) {
   return steps;
 }
 
+const KUBECTL_VERSION = 'v1.30.4';
+
+/**
+ * @param {string[]} deployEnvironments
+ * @param {Record<string, { type: string }>} environments
+ * @returns {boolean}
+ */
+function hasKubernetesDeploy(deployEnvironments, environments) {
+  return deployEnvironments.some((envName) => environments[envName]?.type === 'kubernetes');
+}
+
+/**
+ * @returns {string}
+ */
+function getKubernetesSetupSteps() {
+  return `      - name: Setup kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: '${KUBECTL_VERSION}'
+
+      - name: Configure kubeconfig
+        env:
+          KUBECONFIG_SECRET: \${{ secrets.KUBECONFIG }}
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/.kube"
+          if echo "$KUBECONFIG_SECRET" | base64 -d > "$GITHUB_WORKSPACE/.kube/config" 2>/dev/null; then
+            :
+          else
+            printf '%s' "$KUBECONFIG_SECRET" > "$GITHUB_WORKSPACE/.kube/config"
+          fi
+          chmod 600 "$GITHUB_WORKSPACE/.kube/config"`;
+}
+
+/**
+ * @param {string[]} deployEnvironments
+ * @param {Record<string, { type: string }>} environments
+ * @param {Set<string>} envVars
+ */
+function applyKubernetesWorkflowEnv(deployEnvironments, environments, envVars) {
+  if (!hasKubernetesDeploy(deployEnvironments, environments)) return;
+
+  for (const entry of envVars) {
+    if (entry.startsWith('KUBECONFIG:')) {
+      envVars.delete(entry);
+      break;
+    }
+  }
+  envVars.add('KUBECONFIG: ${{ github.workspace }}/.kube/config');
+}
+
 /**
  * @param {string[]} storageProviders
  * @param {string[]} deployEnvironments
@@ -243,6 +293,8 @@ export function generateWorkflowYaml(
     }
   }
 
+  applyKubernetesWorkflowEnv(deployEnvironments, environments, envVars);
+
   const envBlock = Array.from(envVars)
     .map((line) => `          ${line}`)
     .join('\n');
@@ -252,6 +304,9 @@ export function generateWorkflowYaml(
   const uniqueBackendSteps = [...new Set(backendSteps)].join('\n');
   const githubGitConfigStep = isGithubCliSource(cliSource)
     ? `${getGithubGitConfigStep()}\n`
+    : '';
+  const kubernetesSteps = hasKubernetesDeploy(deployEnvironments, environments)
+    ? `${getKubernetesSetupSteps()}\n`
     : '';
 
   const projectType = config?.projectType || 'frontend';
@@ -272,7 +327,7 @@ jobs:
 ${uniqueBackendSteps ? `${uniqueBackendSteps}\n` : ''}      - uses: actions/setup-node@v4
         with:
           node-version: '20'
-${githubGitConfigStep}      - name: Install project dependencies
+${kubernetesSteps}${githubGitConfigStep}      - name: Install project dependencies
         run: ${installDepsCommand}
       - name: Install DeployHub CLI
         run: npm install ${installSpec} --no-save

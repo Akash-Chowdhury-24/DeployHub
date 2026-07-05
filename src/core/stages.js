@@ -6,6 +6,7 @@ import { deployToAll } from '../deployment/index.js';
 import { sendNotifications } from '../notifications/index.js';
 import axios from 'axios';
 import { getProjectVersion } from '../utils/version.js';
+import { ensureDeployScaffold } from '../utils/scaffold.js';
 
 /**
  * @param {import('../core/config.js').DeployHubConfig} config
@@ -38,6 +39,18 @@ export function buildPipelineStages(config, cwd, state) {
           }
           if (!ctx.config.port && detected.port) {
             ctx.config.port = detected.port;
+          }
+        }
+        const scaffold = await ensureDeployScaffold(
+          ctx.cwd,
+          ctx.config,
+          ctx.config.environments || {},
+          { silent: false }
+        );
+        if (scaffold.dockerfile) {
+          ctx.config.docker = true;
+          if (ctx.config.pipeline) {
+            ctx.config.pipeline.docker = true;
           }
         }
         ctx.state.framework = ctx.config.framework;

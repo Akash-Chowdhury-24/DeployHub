@@ -6,6 +6,11 @@ import { createLogger } from '../logger/index.js';
 import { generateChecksums, formatChecksums } from '../utils/checksums.js';
 import { getProjectVersion } from '../utils/version.js';
 import { generateNginxConfig } from '../utils/nginx.js';
+import {
+  ensureDeployScaffold,
+  copyKubernetesManifestsIfPresent,
+  copyDeployAssetsToArtifactDir,
+} from '../utils/scaffold.js';
 import { getGeneratedByMetadata, getArtifactReadmeFooter } from '../utils/author.js';
 
 /**
@@ -143,6 +148,8 @@ async function stageFrontendArtifact(cwd, stagingDir, config) {
     await copyIfExists(cwd, stagingDir, file);
   }
 
+  await copyKubernetesManifestsIfPresent(cwd, stagingDir);
+
   const hasSshDeploy = (config.deploy || []).some(
     (envName) => config.environments[envName]?.type === 'ssh'
   );
@@ -171,6 +178,8 @@ async function stageBackendArtifact(cwd, stagingDir, config) {
   for (const file of ['Dockerfile', 'docker-compose.yml', '.env.example']) {
     await copyIfExists(cwd, stagingDir, file);
   }
+
+  await copyKubernetesManifestsIfPresent(cwd, stagingDir);
 
   await copyDirectoryIfExists(cwd, stagingDir, 'config');
   await copyDirectoryIfExists(cwd, stagingDir, 'migrations');
@@ -259,6 +268,8 @@ export async function createArtifact(config, deployedTargets = [], cwd = process
 
   log.info(`Staging ${projectType} artifact...`);
 
+  await ensureDeployScaffold(cwd, config, config.environments || {}, { silent: false });
+
   if (projectType === 'both') {
     await stageFrontendArtifact(cwd, stagingDir, config);
     const backendStaging = path.join(stagingDir, 'backend');
@@ -336,6 +347,8 @@ ${getArtifactReadmeFooter()}`;
   log.info('Creating zip archive...');
   const zipPath = path.join(artifactDir, 'artifact.zip');
   await createZip(stagingDir, zipPath);
+
+  await copyDeployAssetsToArtifactDir(stagingDir, artifactDir);
 
   const checksums = await generateChecksums(stagingDir);
   const checksumContent = formatChecksums(checksums);

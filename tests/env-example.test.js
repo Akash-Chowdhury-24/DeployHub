@@ -62,6 +62,7 @@ describe('generateEnvExampleContent', () => {
 
     expect(content).toContain('# Kubernetes Deployment');
     expect(content).toContain('KUBE_CONTEXT=');
+    expect(content).toContain('DOCKER_IMAGE_TAG=');
     expect(content).toContain('kubectl config get-contexts');
   });
 

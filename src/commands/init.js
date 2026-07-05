@@ -21,6 +21,10 @@ import {
 import { printAuthorFooter } from '../utils/author.js';
 import { generateNginxConfig } from '../utils/nginx.js';
 import {
+  ensureDockerfile,
+  ensureKubernetesManifests,
+} from '../utils/scaffold.js';
+import {
   promptServerDeployment,
   buildServerEnvEntry,
   getDockerEnvSecrets,
@@ -190,6 +194,21 @@ async function generateProjectScaffold(config, environments, cwd) {
     await fs.writeFile(path.join(cwd, 'nginx.conf'), nginxConf);
     console.log(chalk.gray('  • nginx.conf (auto-generated)'));
   }
+
+  const dockerResult = await ensureDockerfile(cwd, config);
+  if (dockerResult.generated) {
+    console.log(chalk.gray('  • Dockerfile (auto-generated)'));
+  }
+
+  const k8sResult = await ensureKubernetesManifests(cwd, config, environments);
+  if (k8sResult.generated) {
+    console.log(chalk.gray('  • k8s/deployment.yaml, k8s/service.yaml (auto-generated)'));
+  }
+
+  return {
+    dockerfileGenerated: dockerResult.generated,
+    kubernetesGenerated: k8sResult.generated,
+  };
 }
 
 /**
@@ -397,7 +416,7 @@ export function registerInitCommand(program) {
       }
 
       const version = await getProjectVersion(cwd);
-      const hasDocker =
+      let hasDocker =
         (detectedFrontend?.hasDocker || detectedBackend?.hasDocker) ?? false;
 
       /** @type {Record<string, unknown>} */
@@ -458,7 +477,14 @@ export function registerInitCommand(program) {
         config
       );
 
-      await generateProjectScaffold(config, environments, cwd);
+      const scaffoldResult = await generateProjectScaffold(config, environments, cwd);
+
+      if (scaffoldResult?.dockerfileGenerated) {
+        hasDocker = true;
+        config.docker = true;
+        config.pipeline.docker = true;
+        await saveConfig(config, cwd);
+      }
 
       const envExampleDest = path.join(cwd, '.env.example');
       const envExampleContent = generateEnvExampleContent(

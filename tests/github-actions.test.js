@@ -71,4 +71,34 @@ describe('github cli source', () => {
     expect(secrets).toContain(GITHUB_CLI_TOKEN_SECRET);
     expect(secrets).toContain('AWS_ACCESS_KEY_ID');
   });
+
+  test('workflow installs kubectl and configures kubeconfig for kubernetes deploy', () => {
+    const yaml = generateWorkflowYaml(
+      ['local'],
+      ['production'],
+      { production: { type: 'kubernetes' } },
+      'npm:@akash-chowdhury-24/deployhub',
+      { projectType: 'backend', framework: 'express' }
+    );
+
+    expect(yaml).toContain('azure/setup-kubectl@v4');
+    expect(yaml).toContain("version: 'v1.30.4'");
+    expect(yaml).toContain('Configure kubeconfig');
+    expect(yaml).toContain('KUBECONFIG: ${{ github.workspace }}/.kube/config');
+    expect(yaml).toContain('KUBE_CONTEXT: ${{ secrets.KUBE_CONTEXT }}');
+    expect(yaml.indexOf('Setup kubectl')).toBeLessThan(
+      yaml.indexOf('node ./node_modules/@akash-chowdhury-24/deployhub/src/cli/index.js build')
+    );
+  });
+
+  test('workflow omits kubectl setup when kubernetes is not configured', () => {
+    const yaml = generateWorkflowYaml(
+      ['aws'],
+      [],
+      {},
+      'npm:@akash-chowdhury-24/deployhub'
+    );
+
+    expect(yaml).not.toContain('azure/setup-kubectl@v4');
+  });
 });

@@ -3,6 +3,7 @@ import fs from 'fs-extra';
 import path from 'path';
 import os from 'os';
 import { createLogger } from '../../logger/index.js';
+import { sanitizeK8sName } from '../../utils/kubernetes-manifests.js';
 
 /**
  * @param {import('../../core/config.js').DeployHubConfig} config
@@ -15,6 +16,7 @@ export function createKubernetesProvider(config, envName, env = process.env) {
   const kubeconfig = env.KUBECONFIG || path.join(os.homedir(), '.kube', 'config');
   const context = env.KUBE_CONTEXT || '';
   const namespace = env.KUBE_NAMESPACE || config.project || 'default';
+  const deploymentName = sanitizeK8sName(config.project || 'app');
 
   function getKubectlEnv() {
     const expanded = kubeconfig.replace(/^~/, os.homedir());
@@ -66,8 +68,8 @@ export function createKubernetesProvider(config, envName, env = process.env) {
         kubectlArgs([
           'set',
           'image',
-          `deployment/${config.project}`,
-          `${config.project}=${imageName}:${imageTag}`,
+          `deployment/${deploymentName}`,
+          `${deploymentName}=${imageName}:${imageTag}`,
         ]),
         { stdio: 'pipe', env: getKubectlEnv() }
       ).catch(() => {
@@ -80,7 +82,7 @@ export function createKubernetesProvider(config, envName, env = process.env) {
 
   async function rollback(artifactDir) {
     log.info('Rolling back Kubernetes deployment...');
-    await execa('kubectl', kubectlArgs(['rollout', 'undo', `deployment/${config.project}`]), {
+    await execa('kubectl', kubectlArgs(['rollout', 'undo', `deployment/${deploymentName}`]), {
       stdio: 'inherit',
       env: getKubectlEnv(),
     }).catch(async () => {
@@ -105,7 +107,7 @@ export function createKubernetesProvider(config, envName, env = process.env) {
     try {
       await execa(
         'kubectl',
-        kubectlArgs(['rollout', 'status', `deployment/${config.project}`, '--timeout=30s']),
+        kubectlArgs(['rollout', 'status', `deployment/${deploymentName}`, '--timeout=30s']),
         { stdio: 'pipe', env: getKubectlEnv() }
       );
       return true;

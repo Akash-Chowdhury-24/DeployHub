@@ -185,6 +185,8 @@ The wizard asks the same core questions for every setup:
 - `.github/workflows/deployhub.yml` — CI pipeline
 - `.env.example` — list of env vars you may need
 - `nginx.conf` — auto-generated if frontend deploys to SSH
+- `Dockerfile` — auto-generated if missing and you chose Docker or Kubernetes deploy (your existing `Dockerfile` is never overwritten)
+- `k8s/deployment.yaml` and `k8s/service.yaml` — auto-generated if missing and you chose Kubernetes deploy (existing manifests are never overwritten)
 
 ---
 
@@ -596,7 +598,7 @@ DeployHub supports six deployment targets. Pick based on what infrastructure you
 | **ec2** | AWS users with an existing EC2 instance | Running EC2 instance, security group, key pair |
 | **azure-vm** | Azure users with an existing virtual machine | Running Azure VM, NSG allowing SSH |
 | **gcp-vm** | GCP users with an existing Compute Engine VM | Running VM, firewall rule for SSH, metadata SSH key |
-| **kubernetes** | Teams with an existing K8s cluster | Cluster, kubectl access, manifests in repo |
+| **kubernetes** | Teams with an existing K8s cluster | Cluster, kubectl access; manifests auto-generated if missing |
 
 ---
 
@@ -675,10 +677,11 @@ DeployHub detects whether the server uses Debian-style `sites-available` or RHEL
 
 **Prerequisites:**
 - [ ] Docker installed (`docker --version` works)
-- [ ] `Dockerfile` or `docker-compose.yml` in project
 - [ ] Registry account if pushing private images
+- [ ] `docker-compose.yml` in project if you use multi-service Compose (not auto-generated)
 
 **What DeployHub automates:**
+- Starter `Dockerfile` at project root when none exists (framework-aware; skipped if you already have one)
 - `.env.example` for image name, registry, remote `DOCKER_HOST`
 - Docker daemon connectivity test during `init`
 - `docker compose up` or build/push/run during deploy
@@ -812,11 +815,12 @@ DeployHub detects whether the server uses Debian-style `sites-available` or RHEL
 
 **Prerequisites:**
 - [ ] Existing Kubernetes cluster (DeployHub does not provision clusters)
-- [ ] `kubectl` installed and configured
-- [ ] Kubernetes manifests (`.yaml` or `k8s/` directory) in your repo
+- [ ] `kubectl` installed and configured on your **local machine** (for `deployhub doctor` / manual `deployhub deploy`)
 - [ ] Cluster reachable from CI (kubeconfig secret or cloud auth)
 
 **What DeployHub automates:**
+- Starter `k8s/deployment.yaml` and `k8s/service.yaml` when no manifests exist (skipped if you already have a `k8s/` directory or root-level Kubernetes YAML files)
+- GitHub Actions installs `kubectl` on the CI runner and writes kubeconfig from secrets (no local `kubectl` required for the automated push-to-main deploy path)
 - Lists `kubectl` contexts during `init` for easy selection
 - Auto-detects `~/.kube/config`
 - Complete `.env.example` for kubeconfig, context, namespace
@@ -835,6 +839,7 @@ DeployHub detects whether the server uses Debian-style `sites-available` or RHEL
 | `KUBE_CONTEXT` | Context name | `my-cluster` | `kubectl config get-contexts` |
 | `KUBE_NAMESPACE` | Target namespace | `my-app` | `kubectl get namespaces` |
 | `DOCKER_IMAGE_NAME` | Container image | `ghcr.io/org/app` | Your registry |
+| `DOCKER_IMAGE_TAG` | Image tag | `1.0.0` or `latest` | Project version or your choice |
 | `KUBE_IMAGE_PULL_SECRET` | Pull secret name | `regcred` | `kubectl create secret docker-registry` |
 
 ---

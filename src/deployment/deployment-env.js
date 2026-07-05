@@ -324,6 +324,15 @@ export const DEPLOYMENT_ENV_DEFS = {
       when: 'optional',
     },
     {
+      key: 'DOCKER_IMAGE_TAG',
+      optionalReason: 'defaults to your project version, then "latest" if unset',
+      comment: [
+        'Image tag written into generated manifests and used at deploy time.',
+      ],
+      example: 'latest',
+      when: 'optional',
+    },
+    {
       key: 'KUBE_IMAGE_PULL_SECRET',
       optionalReason: 'only required when pulling from a private container registry',
       comment: [
