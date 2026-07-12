@@ -41,6 +41,8 @@ export function buildPipelineStages(config, cwd, state) {
             ctx.config.port = detected.port;
           }
         }
+        // Resolve version before docker so pipeline build and deploy share the same tag
+        ctx.config.version = await getProjectVersion(ctx.cwd);
         const scaffold = await ensureDeployScaffold(
           ctx.cwd,
           ctx.config,
@@ -118,7 +120,9 @@ export function buildPipelineStages(config, cwd, state) {
       name: 'artifact',
       enabled: (ctx) => ctx.config.artifact !== false,
       async run(ctx) {
-        ctx.config.version = await getProjectVersion(ctx.cwd);
+        if (!ctx.config.version) {
+          ctx.config.version = await getProjectVersion(ctx.cwd);
+        }
         const result = await createArtifact(
           ctx.config,
           /** @type {string[]} */ (ctx.state.deployedTargets || []),

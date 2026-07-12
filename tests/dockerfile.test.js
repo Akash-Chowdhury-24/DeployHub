@@ -1,5 +1,6 @@
 import {
   generateDockerfile,
+  generateDockerignore,
   getDockerfileFrameworkLabel,
   resolveDockerSettings,
 } from '../src/utils/dockerfile.js';
@@ -29,6 +30,16 @@ describe('dockerfile generation', () => {
     expect(dockerfile).toContain('FROM nginx:alpine');
     expect(dockerfile).toContain('/app/dist');
     expect(dockerfile).toContain('EXPOSE 80');
+  });
+
+  test('generateDockerignore excludes node_modules and dist for React', () => {
+    const ignore = generateDockerignore({
+      projectType: 'frontend',
+      framework: 'react',
+      buildOutput: 'dist',
+    });
+    expect(ignore).toContain('node_modules');
+    expect(ignore).toContain('dist');
   });
 
   test('generates Python FastAPI Dockerfile', () => {

@@ -2,6 +2,7 @@ import { execa } from 'execa';
 import fs from 'fs-extra';
 import path from 'path';
 import { createLogger } from '../logger/index.js';
+import { resolveDockerImageRef } from '../utils/docker-image.js';
 
 function create(config, cwd) {
   const log = createLogger('java');
@@ -33,11 +34,17 @@ function create(config, cwd) {
     },
 
     async docker() {
-      if (await fs.pathExists(path.join(cwd, 'Dockerfile'))) {
-        await execa('docker', ['build', '-t', `${config.project}:latest`, '.'], {
-          cwd,
-          stdio: 'inherit',
-        });
+      if (!(await fs.pathExists(path.join(cwd, 'Dockerfile')))) {
+        return;
+      }
+      const { fullImage, latestImage } = resolveDockerImageRef(config);
+      log.info(`Building Docker image (${fullImage})...`);
+      await execa('docker', ['build', '-t', fullImage, '.'], {
+        cwd,
+        stdio: 'inherit',
+      });
+      if (fullImage !== latestImage) {
+        await execa('docker', ['tag', fullImage, latestImage], { stdio: 'pipe' });
       }
     },
   };

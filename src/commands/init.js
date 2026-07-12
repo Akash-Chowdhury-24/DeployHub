@@ -199,6 +199,9 @@ async function generateProjectScaffold(config, environments, cwd) {
   if (dockerResult.generated) {
     console.log(chalk.gray('  • Dockerfile (auto-generated)'));
   }
+  if (dockerResult.dockerignoreGenerated) {
+    console.log(chalk.gray('  • .dockerignore (auto-generated)'));
+  }
 
   const k8sResult = await ensureKubernetesManifests(cwd, config, environments);
   if (k8sResult.generated) {

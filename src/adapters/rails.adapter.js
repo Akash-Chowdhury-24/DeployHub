@@ -2,6 +2,7 @@ import { execa } from 'execa';
 import fs from 'fs-extra';
 import path from 'path';
 import { createLogger } from '../logger/index.js';
+import { resolveDockerImageRef } from '../utils/docker-image.js';
 
 /**
  * @param {import('../core/config.js').DeployHubConfig} config
@@ -54,11 +55,15 @@ function create(config, cwd) {
         log.warn('No Dockerfile found, skipping docker build');
         return;
       }
-      log.info('Building Docker image...');
-      await execa('docker', ['build', '-t', `${config.project}:latest`, '.'], {
+      const { fullImage, latestImage } = resolveDockerImageRef(config);
+      log.info(`Building Docker image (${fullImage})...`);
+      await execa('docker', ['build', '-t', fullImage, '.'], {
         cwd,
         stdio: 'inherit',
       });
+      if (fullImage !== latestImage) {
+        await execa('docker', ['tag', fullImage, latestImage], { stdio: 'pipe' });
+      }
     },
   };
 }

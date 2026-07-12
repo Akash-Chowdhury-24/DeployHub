@@ -3,6 +3,7 @@ import path from 'path';
 import chalk from 'chalk';
 import {
   generateDockerfile,
+  generateDockerignore,
   getDockerfileFrameworkLabel,
   resolveDockerSettings,
 } from './dockerfile.js';
@@ -48,11 +49,11 @@ export function needsKubernetesManifests(
  * @param {string} cwd
  * @param {import('../core/config.js').DeployHubConfig} config
  * @param {{ silent?: boolean }} [options]
- * @returns {Promise<{ generated: boolean, framework?: string }>}
+ * @returns {Promise<{ generated: boolean }>}
  */
-export async function ensureDockerfile(cwd, config, options = {}) {
-  const dockerfilePath = path.join(cwd, 'Dockerfile');
-  if (await fs.pathExists(dockerfilePath)) {
+export async function ensureDockerignore(cwd, config, options = {}) {
+  const dockerignorePath = path.join(cwd, '.dockerignore');
+  if (await fs.pathExists(dockerignorePath)) {
     return { generated: false };
   }
 
@@ -60,20 +61,56 @@ export async function ensureDockerfile(cwd, config, options = {}) {
     return { generated: false };
   }
 
-  const settings = resolveDockerSettings(config);
-  const content = generateDockerfile(config);
-  await fs.writeFile(dockerfilePath, content);
+  await fs.writeFile(dockerignorePath, generateDockerignore(config));
 
   if (!options.silent) {
-    const label = getDockerfileFrameworkLabel(settings.framework);
     console.log(
       chalk.yellow(
-        `No Dockerfile found — generated a starter Dockerfile at ./Dockerfile based on your detected ${label}. Review it before deploying, especially the exposed port and start command.`
+        'No .dockerignore found — generated one at ./.dockerignore to keep node_modules and build caches out of the Docker build context.'
       )
     );
   }
 
-  return { generated: true, framework: settings.framework };
+  return { generated: true };
+}
+
+/**
+ * @param {string} cwd
+ * @param {import('../core/config.js').DeployHubConfig} config
+ * @param {{ silent?: boolean }} [options]
+ * @returns {Promise<{ generated: boolean, framework?: string, dockerignoreGenerated?: boolean }>}
+ */
+export async function ensureDockerfile(cwd, config, options = {}) {
+  const dockerfilePath = path.join(cwd, 'Dockerfile');
+  let generated = false;
+  /** @type {string|undefined} */
+  let framework;
+
+  if (!(await fs.pathExists(dockerfilePath)) && needsDockerfile(config)) {
+    const settings = resolveDockerSettings(config);
+    const content = generateDockerfile(config);
+    await fs.writeFile(dockerfilePath, content);
+    generated = true;
+    framework = settings.framework;
+
+    if (!options.silent) {
+      const label = getDockerfileFrameworkLabel(settings.framework);
+      console.log(
+        chalk.yellow(
+          `No Dockerfile found — generated a starter Dockerfile at ./Dockerfile based on your detected ${label}. Review it before deploying, especially the exposed port and start command.`
+        )
+      );
+    }
+  }
+
+  // Always pair Dockerfile generation path with .dockerignore (never overwrite existing)
+  const dockerignoreResult = await ensureDockerignore(cwd, config, options);
+
+  return {
+    generated,
+    framework,
+    dockerignoreGenerated: dockerignoreResult.generated,
+  };
 }
 
 /**
@@ -133,6 +170,7 @@ export async function ensureDeployScaffold(
   const k8sResult = await ensureKubernetesManifests(cwd, config, environments, options);
   return {
     dockerfile: dockerResult.generated,
+    dockerignore: Boolean(dockerResult.dockerignoreGenerated),
     kubernetes: k8sResult.generated,
   };
 }
@@ -183,6 +221,7 @@ export async function copyDeployAssetsToArtifactDir(stagingDir, artifactDir) {
 
 export default {
   ensureDockerfile,
+  ensureDockerignore,
   ensureKubernetesManifests,
   ensureDeployScaffold,
   needsDockerfile,

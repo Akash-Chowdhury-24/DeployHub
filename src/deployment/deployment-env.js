@@ -388,7 +388,14 @@ export function getDeploymentSecretKeys(deployType, config = null) {
 
   for (const d of defs) {
     if (d.when === 'backend' && !isBackend) continue;
-    if (d.when === 'optional') continue;
+    // Docker optional vars must still appear in CI workflow/secrets checklist —
+    // empty secrets are fine when unused; missing DOCKER_IMAGE_NAME is not.
+    if (d.when === 'optional') {
+      if (deployType === 'docker' && d.key.startsWith('DOCKER_')) {
+        keys.push(d.key);
+      }
+      continue;
+    }
     if (d.key === 'SSH_KEY_PATH') {
       keys.push('SSH_KEY');
       continue;
@@ -512,13 +519,16 @@ export const DEPLOYMENT_GUIDE = {
     ],
     automates: [
       'Generates config, workflow, and .env.example for registry and image settings.',
+      'Generates a starter Dockerfile and .dockerignore when missing.',
       'Tests Docker daemon connectivity during init.',
-      'Builds and runs containers via docker compose during deploy.',
+      'Builds the image once during the pipeline docker stage, then reuses it on deploy.',
     ],
     after: [
-      'Copy .env.example to .env and set DOCKER_IMAGE_NAME (and registry creds if private).',
-      'If using a remote Docker host, set DOCKER_HOST and TLS cert paths in .env.',
-      'Add the same values as GitHub Secrets for CI.',
+      'Copy .env.example to .env and set DOCKER_IMAGE_NAME (required — e.g. myuser/myapp).',
+      'Optional in .env: DOCKER_IMAGE_TAG, DOCKER_REGISTRY_URL, DOCKER_HOST, DOCKER_TLS_VERIFY, DOCKER_CERT_PATH.',
+      'If using a private registry: also set DOCKER_REGISTRY_USERNAME and DOCKER_REGISTRY_TOKEN.',
+      'Add GitHub Secrets (Settings → Secrets and variables → Actions): DOCKER_IMAGE_NAME (required). Local .env is NOT used by GitHub Actions — doctor only checks your machine.',
+      'Also add as GitHub Secrets if set locally: DOCKER_IMAGE_TAG, DOCKER_REGISTRY_URL, DOCKER_REGISTRY_USERNAME, DOCKER_REGISTRY_TOKEN, DOCKER_HOST, DOCKER_TLS_VERIFY, DOCKER_CERT_PATH.',
       'Run deployhub doctor to verify Docker is reachable.',
       'git push origin main to trigger your first deployment.',
     ],
