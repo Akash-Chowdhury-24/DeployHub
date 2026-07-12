@@ -3,7 +3,8 @@ import path from 'path';
 import { getWorkflowHeaderComment } from './author.js';
 import {
   generateDeploymentEnvSection,
-  getDeploymentSecretKeys,
+  getDeploymentWorkflowSecretKeys,
+  getDeploymentSecretChecklistItems,
   DEPLOYMENT_ENV_KEYS,
 } from '../deployment/deployment-env.js';
 
@@ -287,7 +288,7 @@ export function generateWorkflowYaml(
     const env = environments[envName];
     if (!env) continue;
 
-    const keys = getDeploymentSecretKeys(env.type, config);
+    const keys = getDeploymentWorkflowSecretKeys(env.type, config);
     for (const key of keys) {
       envVars.add(`${key}: \${{ secrets.${key} }}`);
     }
@@ -438,10 +439,12 @@ export async function guessCliGithubRepo(cwd = process.cwd()) {
 }
 
 /**
+ * Flat list of required secret key names (for callers that only need keys).
  * @param {string[]} storageProviders
  * @param {string[]} deployEnvironments
  * @param {Record<string, { type: string }>} environments
  * @param {import('../core/config.js').DeployHubConfig} [config]
+ * @param {string|null} [cliSource]
  * @returns {string[]}
  */
 export function getRequiredSecrets(
@@ -451,28 +454,69 @@ export function getRequiredSecrets(
   config = null,
   cliSource = null
 ) {
-  /** @type {Set<string>} */
-  const secrets = new Set();
+  return getGithubSecretsChecklist(
+    storageProviders,
+    deployEnvironments,
+    environments,
+    config,
+    cliSource
+  )
+    .filter((item) => item.required)
+    .map((item) => item.key);
+}
+
+/**
+ * Labeled GitHub Secrets checklist (required + optional) for post-init output.
+ * @param {string[]} storageProviders
+ * @param {string[]} deployEnvironments
+ * @param {Record<string, { type: string }>} environments
+ * @param {import('../core/config.js').DeployHubConfig} [config]
+ * @param {string|null} [cliSource]
+ * @returns {import('../deployment/deployment-env.js').SecretChecklistItem[]}
+ */
+export function getGithubSecretsChecklist(
+  storageProviders,
+  deployEnvironments,
+  environments,
+  config = null,
+  cliSource = null
+) {
+  /** @type {Map<string, import('../deployment/deployment-env.js').SecretChecklistItem>} */
+  const byKey = new Map();
 
   const resolvedCliSource = cliSource || config?.cli?.source;
   if (isGithubCliSource(resolvedCliSource)) {
-    secrets.add(GITHUB_CLI_TOKEN_SECRET);
+    byKey.set(GITHUB_CLI_TOKEN_SECRET, {
+      key: GITHUB_CLI_TOKEN_SECRET,
+      required: true,
+      note: 'required when installing DeployHub CLI from a private GitHub repo',
+    });
   }
 
   for (const provider of storageProviders) {
     const keys = PROVIDER_ENV_MAP[provider] || [];
-    keys.forEach((k) => secrets.add(k));
+    for (const key of keys) {
+      byKey.set(key, { key, required: true });
+    }
   }
 
   for (const envName of deployEnvironments) {
     const env = environments[envName];
-    if (!env) continue;
+    if (!env?.type) continue;
 
-    const keys = getDeploymentSecretKeys(env.type, config);
-    keys.forEach((k) => secrets.add(k));
+    for (const item of getDeploymentSecretChecklistItems(env.type, config)) {
+      const existing = byKey.get(item.key);
+      if (existing) {
+        if (item.required && !existing.required) {
+          byKey.set(item.key, item);
+        }
+        continue;
+      }
+      byKey.set(item.key, item);
+    }
   }
 
-  return Array.from(secrets);
+  return Array.from(byKey.values());
 }
 
 /**

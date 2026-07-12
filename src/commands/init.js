@@ -13,7 +13,7 @@ import {
 import { getProjectVersion } from '../utils/version.js';
 import {
   writeWorkflowFile,
-  getRequiredSecrets,
+  getGithubSecretsChecklist,
   generateEnvExampleContent,
   addDeployhubToPackageJson,
   DEFAULT_NPM_CLI_SOURCE,
@@ -30,7 +30,10 @@ import {
   getDockerEnvSecrets,
   SSH_BASED,
 } from '../deployment/init-prompts.js';
-import { printDeploymentNextSteps } from '../deployment/deployment-env.js';
+import {
+  printDeploymentNextSteps,
+  formatSecretChecklistLine,
+} from '../deployment/deployment-env.js';
 import { confirmValueIfContainsSpaces } from '../deployment/init-helpers.js';
 
 const FRONTEND_CHOICES = [
@@ -498,23 +501,34 @@ export function registerInitCommand(program) {
       );
       await fs.writeFile(envExampleDest, envExampleContent);
 
-      const secrets = getRequiredSecrets(config.storage, deploy, environments, config);
+      const secretsChecklist = getGithubSecretsChecklist(
+        config.storage,
+        deploy,
+        environments,
+        config
+      );
 
       console.log('');
       if (primaryDeployType) {
         console.log(chalk.green.bold(`✔ Config generated for ${primaryDeployType} deployment.`));
-        printDeploymentNextSteps(primaryDeployType, secrets);
+        printDeploymentNextSteps(primaryDeployType, secretsChecklist);
       } else {
         console.log(chalk.green.bold('✓ DeployHub initialized successfully!'));
         console.log('');
         console.log(chalk.bold('Next steps:'));
         console.log('  1. Copy .env.example to .env and fill in credentials');
-        if (secrets.length > 0) {
+        if (secretsChecklist.length > 0) {
           console.log('  2. Add these secrets to GitHub (Settings → Secrets):');
-          secrets.forEach((s) => console.log(`     • ${s}`));
+          secretsChecklist.forEach((item) =>
+            console.log(`     ${formatSecretChecklistLine(item)}`)
+          );
         }
-        console.log(`  ${secrets.length > 0 ? '3' : '2'}. Run ${chalk.cyan('deployhub doctor')} to verify your setup`);
-        console.log(`  ${secrets.length > 0 ? '4' : '3'}. Push to main — GitHub Actions will run ${chalk.cyan('deployhub build')} automatically`);
+        console.log(
+          `  ${secretsChecklist.length > 0 ? '3' : '2'}. Run ${chalk.cyan('deployhub doctor')} to verify your setup`
+        );
+        console.log(
+          `  ${secretsChecklist.length > 0 ? '4' : '3'}. Push to main — GitHub Actions will run ${chalk.cyan('deployhub build')} automatically`
+        );
       }
 
       console.log('');

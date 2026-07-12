@@ -353,6 +353,8 @@ export const DEPLOYMENT_ENV_KEYS = Object.fromEntries(
 );
 
 /**
+ * Locally required env keys for doctor method-specific checks.
+ * Excludes optional and CI-only vars.
  * @param {string} deployType
  * @param {import('../core/config.js').DeployHubConfig} [config]
  * @returns {string[]}
@@ -373,7 +375,16 @@ export function getDeploymentEnvKeys(deployType, config = null) {
 }
 
 /**
- * Required secrets for GitHub Actions (includes CI-only vars like SSH_KEY).
+ * Map a def key to the GitHub Actions secret name (SSH_KEY_PATH → SSH_KEY).
+ * @param {string} key
+ */
+function toGithubSecretKey(key) {
+  return key === 'SSH_KEY_PATH' ? 'SSH_KEY' : key;
+}
+
+/**
+ * Genuinely required secrets for doctor "Secrets" check and required checklist items.
+ * Includes CI-only vars (e.g. SSH_KEY) but NOT optional vars.
  * @param {string} deployType
  * @param {import('../core/config.js').DeployHubConfig} [config]
  * @returns {string[]}
@@ -388,22 +399,93 @@ export function getDeploymentSecretKeys(deployType, config = null) {
 
   for (const d of defs) {
     if (d.when === 'backend' && !isBackend) continue;
-    // Docker optional vars must still appear in CI workflow/secrets checklist —
-    // empty secrets are fine when unused; missing DOCKER_IMAGE_NAME is not.
-    if (d.when === 'optional') {
-      if (deployType === 'docker' && d.key.startsWith('DOCKER_')) {
-        keys.push(d.key);
+    if (d.when === 'optional') continue;
+    keys.push(toGithubSecretKey(d.key));
+  }
+
+  return [...new Set(keys)];
+}
+
+/**
+ * Broad CI-wiring list for the GitHub Actions workflow generator.
+ * Includes required, CI-only, and optional keys so `${{ secrets.X }}` is
+ * available when the user sets optional secrets — empty secrets are fine.
+ * @param {string} deployType
+ * @param {import('../core/config.js').DeployHubConfig} [config]
+ * @returns {string[]}
+ */
+export function getDeploymentWorkflowSecretKeys(deployType, config = null) {
+  const defs = DEPLOYMENT_ENV_DEFS[deployType] || [];
+  const projectType = config?.projectType || 'frontend';
+  const isBackend = projectType === 'backend' || projectType === 'both';
+
+  /** @type {string[]} */
+  const keys = [];
+
+  for (const d of defs) {
+    if (d.when === 'backend' && !isBackend) continue;
+    keys.push(toGithubSecretKey(d.key));
+  }
+
+  return [...new Set(keys)];
+}
+
+/**
+ * @typedef {{ key: string, required: boolean, note?: string }} SecretChecklistItem
+ */
+
+/**
+ * Labeled GitHub Secrets checklist entries for a single deploy method.
+ * @param {string} deployType
+ * @param {import('../core/config.js').DeployHubConfig} [config]
+ * @returns {SecretChecklistItem[]}
+ */
+export function getDeploymentSecretChecklistItems(deployType, config = null) {
+  const defs = DEPLOYMENT_ENV_DEFS[deployType] || [];
+  const projectType = config?.projectType || 'frontend';
+  const isBackend = projectType === 'backend' || projectType === 'both';
+
+  /** @type {Map<string, SecretChecklistItem>} */
+  const byKey = new Map();
+
+  for (const d of defs) {
+    if (d.when === 'backend' && !isBackend) continue;
+
+    const key = toGithubSecretKey(d.key);
+    const required = d.when !== 'optional';
+    const note =
+      d.when === 'optional'
+        ? d.optionalReason
+        : d.when === 'ci'
+          ? d.optionalReason || 'required for GitHub Actions CI (paste private key contents)'
+          : undefined;
+
+    const existing = byKey.get(key);
+    if (existing) {
+      // Prefer required if any def for this key is required
+      if (required && !existing.required) {
+        byKey.set(key, { key, required: true, note });
       }
       continue;
     }
-    if (d.key === 'SSH_KEY_PATH') {
-      keys.push('SSH_KEY');
-      continue;
-    }
-    keys.push(d.key);
+
+    byKey.set(key, { key, required, note });
   }
 
-  return keys;
+  return Array.from(byKey.values());
+}
+
+/**
+ * Format a checklist item for console output.
+ * @param {SecretChecklistItem} item
+ */
+export function formatSecretChecklistLine(item) {
+  if (item.required) {
+    const note = item.note ? ` — ${item.note}` : '';
+    return `• ${item.key} (required${note})`;
+  }
+  const note = item.note ? ` — ${item.note}` : '';
+  return `• ${item.key} (optional${note})`;
 }
 
 /**
@@ -448,6 +530,7 @@ export function generateDeploymentEnvSection(
 
   return lines.join('\n').trimEnd();
 }
+
 
 /**
  * @param {string} key
@@ -527,8 +610,7 @@ export const DEPLOYMENT_GUIDE = {
       'Copy .env.example to .env and set DOCKER_IMAGE_NAME (required — e.g. myuser/myapp).',
       'Optional in .env: DOCKER_IMAGE_TAG, DOCKER_REGISTRY_URL, DOCKER_HOST, DOCKER_TLS_VERIFY, DOCKER_CERT_PATH.',
       'If using a private registry: also set DOCKER_REGISTRY_USERNAME and DOCKER_REGISTRY_TOKEN.',
-      'Add GitHub Secrets (Settings → Secrets and variables → Actions): DOCKER_IMAGE_NAME (required). Local .env is NOT used by GitHub Actions — doctor only checks your machine.',
-      'Also add as GitHub Secrets if set locally: DOCKER_IMAGE_TAG, DOCKER_REGISTRY_URL, DOCKER_REGISTRY_USERNAME, DOCKER_REGISTRY_TOKEN, DOCKER_HOST, DOCKER_TLS_VERIFY, DOCKER_CERT_PATH.',
+      'Add the GitHub Secrets listed below (Settings → Secrets and variables → Actions). Local .env is NOT used by GitHub Actions — doctor only checks your machine.',
       'Run deployhub doctor to verify Docker is reachable.',
       'git push origin main to trigger your first deployment.',
     ],
@@ -622,9 +704,9 @@ export const DEPLOYMENT_GUIDE = {
 
 /**
  * @param {string} deployType
- * @param {string[]} [extraSecrets]
+ * @param {SecretChecklistItem[]} [checklist]
  */
-export function printDeploymentNextSteps(deployType, extraSecrets = []) {
+export function printDeploymentNextSteps(deployType, checklist = []) {
   const guide = DEPLOYMENT_GUIDE[deployType];
   if (!guide) return;
 
@@ -635,10 +717,10 @@ export function printDeploymentNextSteps(deployType, extraSecrets = []) {
     console.log(`    ${i + 1}. ${step}`);
   });
 
-  if (extraSecrets.length > 0) {
+  if (checklist.length > 0) {
     console.log('\n  GitHub Secrets to add (Settings → Secrets and variables → Actions):');
-    for (const s of extraSecrets) {
-      console.log(`    • ${s}`);
+    for (const item of checklist) {
+      console.log(`    ${formatSecretChecklistLine(item)}`);
     }
   }
 }

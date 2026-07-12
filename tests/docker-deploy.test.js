@@ -119,12 +119,10 @@ describe('dockerignore generation', () => {
 });
 
 describe('docker GitHub secrets checklist', () => {
-  test('getDeploymentSecretKeys includes DOCKER_IMAGE_NAME and registry vars', () => {
+  test('getDeploymentSecretKeys only includes required DOCKER_IMAGE_NAME', () => {
     const keys = getDeploymentSecretKeys('docker');
     expect(keys).toContain('DOCKER_IMAGE_NAME');
-    expect(keys).toContain('DOCKER_IMAGE_TAG');
-    expect(keys).toContain('DOCKER_REGISTRY_USERNAME');
-    expect(keys).toContain('DOCKER_REGISTRY_TOKEN');
-    expect(keys).toContain('DOCKER_HOST');
+    expect(keys).not.toContain('DOCKER_REGISTRY_TOKEN');
+    expect(keys).not.toContain('DOCKER_HOST');
   });
 });
