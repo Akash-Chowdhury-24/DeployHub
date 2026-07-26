@@ -87,7 +87,7 @@ describe('checkImagePullability', () => {
 
     const result = await checkImagePullability(
       { project: 'demo-app', version: '0.0.0' },
-      { DOCKER_IMAGE_NAME: 'myuser/demo-app' }
+      { DOCKER_IMAGE_NAME: 'myuser/demo-app', DOCKER_IMAGE_TAG: '0.0.0' }
     );
 
     expect(result.ok).toBe(true);
@@ -106,7 +106,7 @@ describe('checkImagePullability', () => {
 
     const result = await checkImagePullability(
       { project: 'missing', version: '0.0.0' },
-      { DOCKER_IMAGE_NAME: 'missing' }
+      { DOCKER_IMAGE_NAME: 'missing', DOCKER_IMAGE_TAG: '0.0.0' }
     );
 
     expect(result.ok).toBe(false);
@@ -124,6 +124,7 @@ describe('checkImagePullability', () => {
       { project: 'demo-app', version: '1.0.0' },
       {
         DOCKER_IMAGE_NAME: 'myuser/demo-app',
+        DOCKER_IMAGE_TAG: '1.0.0',
         DOCKER_REGISTRY_USERNAME: 'myuser',
         DOCKER_REGISTRY_TOKEN: 'secret',
       }

@@ -83,6 +83,7 @@ spec:
     spec:
 ${pullSecretBlock}      containers:
       - name: ${name}
+        # Image tag is overwritten at deploy time (kubectl set image uses the resolved build tag)
         image: ${image}
         ports:
         - containerPort: ${port}

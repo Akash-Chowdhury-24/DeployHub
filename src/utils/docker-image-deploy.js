@@ -11,6 +11,7 @@ import {
   isFrontendStaticFramework,
   isInterpretedBackendFramework,
   resolveDockerImageRef,
+  EXPLICIT_IMAGE_TAG_WARNING,
 } from './docker-image.js';
 
 /**
@@ -22,12 +23,18 @@ import {
  * @param {{ info: Function, warn: Function, success: Function }} log
  */
 export function createDockerImageDeployContext(config, env = process.env, log) {
-  const { fullImage, latestImage, legacyLatestImage, imageTag } =
+  const { fullImage, latestImage, legacyLatestImage, imageTag, tagSource } =
     resolveDockerImageRef(config, env);
   const registryUrl = env.DOCKER_REGISTRY_URL || '';
   const registryUser = env.DOCKER_REGISTRY_USERNAME || '';
   const registryToken = env.DOCKER_REGISTRY_TOKEN || '';
   const dockerHost = env.DOCKER_HOST || '';
+
+  if (tagSource === 'explicit') {
+    log.warn(EXPLICIT_IMAGE_TAG_WARNING);
+  } else {
+    log.info(`Using auto image tag '${imageTag}' (source: ${tagSource})`);
+  }
 
   function getDockerEnv() {
     /** @type {Record<string, string>} */
@@ -324,6 +331,7 @@ export function createDockerImageDeployContext(config, env = process.env, log) {
     fullImage,
     latestImage,
     imageTag,
+    tagSource,
     getDockerEnv,
     hasRegistryCredentials,
     dockerLogin,

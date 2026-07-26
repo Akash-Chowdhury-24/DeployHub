@@ -15,20 +15,74 @@ import os from 'os';
 import path from 'path';
 
 describe('docker image naming', () => {
-  test('resolveDockerImageRef uses DOCKER_IMAGE_NAME and version tag', () => {
+  test('resolveDockerImageRef uses DOCKER_IMAGE_NAME and explicit DOCKER_IMAGE_TAG', () => {
     const ref = resolveDockerImageRef(
       { project: 'demo-react-project', version: '0.0.0' },
-      { DOCKER_IMAGE_NAME: 'akashchowdhury/demo-react-project' }
+      {
+        DOCKER_IMAGE_NAME: 'akashchowdhury/demo-react-project',
+        DOCKER_IMAGE_TAG: '0.0.0',
+      }
     );
 
     expect(ref.fullImage).toBe('akashchowdhury/demo-react-project:0.0.0');
     expect(ref.latestImage).toBe('akashchowdhury/demo-react-project:latest');
     expect(ref.legacyLatestImage).toBe('demo-react-project:latest');
+    expect(ref.tagSource).toBe('explicit');
   });
 
-  test('resolveDockerImageRef falls back to project name', () => {
-    const ref = resolveDockerImageRef({ project: 'myapp' }, {});
-    expect(ref.fullImage).toBe('myapp:latest');
+  test('resolveDockerImageRef falls back to project name with auto tag', () => {
+    const now = new Date(2026, 6, 26, 17, 15, 48, 231);
+    const ref = resolveDockerImageRef(
+      { project: 'myapp', version: '0.0.0' },
+      {},
+      { getGitShortSha: () => null, now: () => now }
+    );
+    expect(ref.imageName).toBe('myapp');
+    expect(ref.tagSource).toBe('timestamp');
+    expect(ref.fullImage).toBe('myapp:2026.07.26.1715-48231');
+  });
+
+  test('resolveDockerImageRef ignores config.version when DOCKER_IMAGE_TAG unset', () => {
+    const ref = resolveDockerImageRef(
+      { project: 'myapp', version: '0.0.0' },
+      {},
+      { getGitShortSha: () => 'abc1234' }
+    );
+    expect(ref.fullImage).toBe('myapp:abc1234');
+    expect(ref.tagSource).toBe('git');
+    expect(ref.imageTag).not.toBe('0.0.0');
+  });
+
+  test('resolveDockerImageRef uses CI fallback when git is unavailable', () => {
+    const ref = resolveDockerImageRef(
+      { project: 'myapp' },
+      { GITHUB_SHA: 'deadbeefcafebabe' },
+      { getGitShortSha: () => null }
+    );
+    expect(ref.fullImage).toBe('myapp:deadbee');
+    expect(ref.tagSource).toBe('ci');
+  });
+
+  test('resolveDockerImageRef uses GITHUB_RUN_ID when SHA missing', () => {
+    const ref = resolveDockerImageRef(
+      { project: 'myapp' },
+      { GITHUB_RUN_ID: '998877' },
+      { getGitShortSha: () => null }
+    );
+    expect(ref.fullImage).toBe('myapp:998877');
+    expect(ref.tagSource).toBe('ci');
+  });
+
+  test('resolveDockerImageRef prefixes DOCKER_REGISTRY_URL into fullImage', () => {
+    const ref = resolveDockerImageRef(
+      { project: 'myapp' },
+      {
+        DOCKER_IMAGE_NAME: 'myapp',
+        DOCKER_IMAGE_TAG: 'v1',
+        DOCKER_REGISTRY_URL: 'ghcr.io/myorg',
+      }
+    );
+    expect(ref.fullImage).toBe('ghcr.io/myorg/myapp:v1');
   });
 
   test('generateFrontendRuntimeDockerfile copies pre-built output only', () => {

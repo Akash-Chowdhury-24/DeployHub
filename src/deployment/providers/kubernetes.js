@@ -6,6 +6,7 @@ import { createLogger } from '../../logger/index.js';
 import { sanitizeK8sName } from '../../utils/kubernetes-manifests.js';
 import { createDockerImageDeployContext } from '../../utils/docker-image-deploy.js';
 import { ensureKubernetesNamespace } from '../../utils/kubernetes-namespace.js';
+import { syncKubernetesDeploymentImage } from '../../utils/kubernetes-deploy-image.js';
 
 /**
  * @param {import('../../core/config.js').DeployHubConfig} config
@@ -88,22 +89,15 @@ export function createKubernetesProvider(config, envName, env = process.env) {
       env: getKubectlEnv(),
     });
 
-    const imageName = env.DOCKER_IMAGE_NAME;
-    const imageTag = env.DOCKER_IMAGE_TAG || config.version || 'latest';
-    if (imageName && config.project) {
-      await execa(
-        'kubectl',
-        kubectlArgs([
-          'set',
-          'image',
-          `deployment/${deploymentName}`,
-          `${deploymentName}=${imageName}:${imageTag}`,
-        ]),
-        { stdio: 'pipe', env: getKubectlEnv() }
-      ).catch(() => {
-        log.warn('kubectl set image skipped (deployment name may differ from project name)');
-      });
-    }
+    // Always set image to the resolved fullImage (includes registry URL prefix when set).
+    // If the live ref already equals fullImage, rollout restart so a new digest is pulled.
+    await syncKubernetesDeploymentImage({
+      deploymentName,
+      fullImage: imageOps.fullImage,
+      kubectlArgs,
+      getKubectlEnv,
+      log,
+    });
 
     log.success('Kubernetes deployment complete');
   }

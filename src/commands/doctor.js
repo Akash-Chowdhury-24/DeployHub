@@ -451,6 +451,24 @@ async function runDeploymentChecks(config, envName, envConfig) {
     );
 
     checks.push(
+      await runCheck('Image tag strategy', async () => {
+        if (process.env.DOCKER_IMAGE_TAG) {
+          return {
+            name: 'Image tag strategy',
+            pass: true,
+            message: `DOCKER_IMAGE_TAG='${process.env.DOCKER_IMAGE_TAG}' is set explicitly — deploy will rollout-restart when the full image ref is unchanged; prefer unset for unique tags per build`,
+          };
+        }
+        return {
+          name: 'Image tag strategy',
+          pass: true,
+          message:
+            'DOCKER_IMAGE_TAG unset — deploy will auto-generate a unique tag (git SHA → CI id → timestamp)',
+        };
+      })
+    );
+
+    checks.push(
       await runCheck('Container image pullable', async () => {
         const result = await checkImagePullability(config, process.env);
         return {

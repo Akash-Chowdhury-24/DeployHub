@@ -96,8 +96,12 @@ export const DEPLOYMENT_ENV_DEFS = {
     },
     {
       key: 'DOCKER_IMAGE_TAG',
-      optionalReason: 'defaults to your project version if unset',
-      comment: ['Image tag to build and deploy.'],
+      optionalReason:
+        'leave unset for a unique tag per build (git SHA → CI run id → timestamp); explicit tags are reused as-is',
+      comment: [
+        'Optional. Leave unset for a unique tag per build (git SHA, CI run id, or timestamp).',
+        'If set explicitly, the same tag is reused — Kubernetes may keep stale pods unless imagePullPolicy is Always or a rollout restart runs.',
+      ],
       example: 'latest',
       when: 'optional',
     },
@@ -324,9 +328,11 @@ export const DEPLOYMENT_ENV_DEFS = {
     },
     {
       key: 'DOCKER_IMAGE_TAG',
-      optionalReason: 'defaults to your project version, then "latest" if unset',
+      optionalReason:
+        'leave unset for a unique tag per build (git SHA → CI run id → timestamp); explicit tags are reused as-is',
       comment: [
-        'Image tag written into generated manifests and used at deploy time.',
+        'Optional image tag. Unset → DeployHub auto-generates a unique tag each build.',
+        'If set, that exact tag is used — reusing it can leave pods on a stale image (IfNotPresent) unless you rely on deploy-time rollout restart or set imagePullPolicy: Always.',
       ],
       example: 'latest',
       when: 'optional',
@@ -572,7 +578,7 @@ function getDefaultFromConfig(key, config, environments) {
     SSH_SSH_PORT: '22',
     KUBE_NAMESPACE: config?.project || 'default',
     DOCKER_IMAGE_NAME: config?.project,
-    DOCKER_IMAGE_TAG: config?.version || 'latest',
+    DOCKER_IMAGE_TAG: '',
     DOCKER_REGISTRY_URL: envEntry.dockerRegistryUrl,
     AWS_REGION: 'us-east-1',
   };

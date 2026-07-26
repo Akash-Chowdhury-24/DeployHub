@@ -2,20 +2,100 @@
  * Shared Docker image naming for pipeline builds and deploy.
  */
 
+import { execFileSync } from 'child_process';
+
+/** @typedef {'explicit'|'git'|'ci'|'timestamp'} ImageTagSource */
+
+export const EXPLICIT_IMAGE_TAG_WARNING =
+  'DOCKER_IMAGE_TAG is set — reusing the same tag across deploys can leave Kubernetes pods on a stale image (imagePullPolicy defaults to IfNotPresent) unless imagePullPolicy is Always or a rollout restart runs.';
+
+/**
+ * High-resolution timestamp for image tags only (artifact versioning keeps getDateVersion()).
+ * Minute prefix matches getDateVersion(); seconds+ms avoid collisions in fast rebuild loops.
+ * @param {Date} [now]
+ * @returns {string}
+ */
+export function highResImageTagFallback(now = new Date()) {
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, '0');
+  const d = String(now.getDate()).padStart(2, '0');
+  const h = String(now.getHours()).padStart(2, '0');
+  const min = String(now.getMinutes()).padStart(2, '0');
+  const sec = String(now.getSeconds()).padStart(2, '0');
+  const ms = String(now.getMilliseconds()).padStart(3, '0');
+  return `${y}.${m}.${d}.${h}${min}-${sec}${ms}`;
+}
+
+/**
+ * @returns {string|null}
+ */
+function defaultGetGitShortSha() {
+  try {
+    const sha = execFileSync('git', ['rev-parse', '--short', 'HEAD'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+    return sha || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Resolve image tag when DOCKER_IMAGE_TAG is unset: git SHA → CI id → high-res timestamp.
+ * Does not use config.version (static package versions would prevent redeploys).
+ *
+ * @param {Record<string, string|undefined>} [env]
+ * @param {{
+ *   getGitShortSha?: () => string|null,
+ *   now?: () => Date,
+ * }} [options]
+ * @returns {{ imageTag: string, tagSource: ImageTagSource }}
+ */
+export function resolveImageTag(env = process.env, options = {}) {
+  const explicit = env.DOCKER_IMAGE_TAG;
+  if (explicit) {
+    return { imageTag: explicit, tagSource: 'explicit' };
+  }
+
+  const getGitShortSha = options.getGitShortSha || defaultGetGitShortSha;
+  const gitSha = getGitShortSha();
+  if (gitSha) {
+    return { imageTag: gitSha, tagSource: 'git' };
+  }
+
+  const ciTag =
+    (env.GITHUB_SHA && String(env.GITHUB_SHA).slice(0, 7)) ||
+    env.GITHUB_RUN_ID ||
+    env.CI_COMMIT_SHORT_SHA ||
+    env.CI_PIPELINE_ID;
+  if (ciTag) {
+    return { imageTag: String(ciTag), tagSource: 'ci' };
+  }
+
+  const now = options.now ? options.now() : new Date();
+  return { imageTag: highResImageTagFallback(now), tagSource: 'timestamp' };
+}
+
 /**
  * @param {import('../core/config.js').DeployHubConfig} config
  * @param {Record<string, string|undefined>} [env]
+ * @param {{
+ *   getGitShortSha?: () => string|null,
+ *   now?: () => Date,
+ * }} [options]
  * @returns {{
  *   imageName: string,
  *   imageTag: string,
  *   fullImage: string,
  *   latestImage: string,
  *   legacyLatestImage: string,
+ *   tagSource: ImageTagSource,
  * }}
  */
-export function resolveDockerImageRef(config, env = process.env) {
+export function resolveDockerImageRef(config, env = process.env, options = {}) {
   const imageName = env.DOCKER_IMAGE_NAME || config.project;
-  const imageTag = env.DOCKER_IMAGE_TAG || config.version || 'latest';
+  const { imageTag, tagSource } = resolveImageTag(env, options);
   const registryUrl = env.DOCKER_REGISTRY_URL || '';
 
   const repository =
@@ -29,6 +109,7 @@ export function resolveDockerImageRef(config, env = process.env) {
     fullImage: `${repository}:${imageTag}`,
     latestImage: `${repository}:latest`,
     legacyLatestImage: `${config.project}:latest`,
+    tagSource,
   };
 }
 
@@ -170,6 +251,9 @@ export function describeInterpretedBackendGap(framework) {
 
 export default {
   resolveDockerImageRef,
+  resolveImageTag,
+  highResImageTagFallback,
+  EXPLICIT_IMAGE_TAG_WARNING,
   generateFrontendRuntimeDockerfile,
   generateSpringRuntimeDockerfile,
   generateGoRuntimeDockerfile,

@@ -53,6 +53,9 @@ describe('kubernetes manifest generation', () => {
     });
 
     expect(deploymentYaml).toContain('image: ghcr.io/org/app:1.2.3');
+    expect(deploymentYaml).toContain(
+      '# Image tag is overwritten at deploy time (kubectl set image uses the resolved build tag)'
+    );
     expect(deploymentYaml).not.toContain('image: ghcr.io/org/app:latest');
   });
 
