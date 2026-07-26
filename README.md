@@ -675,6 +675,8 @@ DeployHub detects whether the server uses Debian-style `sites-available` or RHEL
 
 ### Docker
 
+**Verification:** Real-world verified (local and CI Docker deploys).
+
 **Prerequisites:**
 - [ ] Docker installed (`docker --version` works)
 - [ ] Registry account if pushing private images
@@ -682,20 +684,25 @@ DeployHub detects whether the server uses Debian-style `sites-available` or RHEL
 
 **What DeployHub automates:**
 - Starter `Dockerfile` at project root when none exists (framework-aware; skipped if you already have one)
+- `.dockerignore` when missing (never overwrites an existing one)
 - `.env.example` for image name, registry, remote `DOCKER_HOST`
 - Docker daemon connectivity test during `init`
+- Reuses the image built in the pipeline `docker` stage when present; otherwise builds from the artifact
+- Registry login + push when `DOCKER_REGISTRY_USERNAME` / `DOCKER_REGISTRY_TOKEN` are set
+- Auto-generates a unique image tag per build when `DOCKER_IMAGE_TAG` is unset (git SHA → CI run id → timestamp)
 - `docker compose up` or build/push/run during deploy
 
 **After `init`:**
-1. Set `DOCKER_IMAGE_NAME` in `.env`
-2. For private registries: set `DOCKER_REGISTRY_USERNAME` and `DOCKER_REGISTRY_TOKEN`
-3. For remote Docker: set `DOCKER_HOST` (e.g. `ssh://ubuntu@203.0.113.10`)
-4. Run `deployhub doctor`, then `git push origin main`
+1. Set `DOCKER_IMAGE_NAME` in `.env` (e.g. `myuser/myapp` for Docker Hub)
+2. For private registries (or any push): set `DOCKER_REGISTRY_USERNAME` and `DOCKER_REGISTRY_TOKEN`
+3. Leave `DOCKER_IMAGE_TAG` unset for a unique tag each build — set it only if you intentionally want a fixed tag
+4. For remote Docker: set `DOCKER_HOST` (e.g. `ssh://ubuntu@203.0.113.10`)
+5. Run `deployhub doctor`, then `git push origin main`
 
 | Variable | Description | Example | Where to get it |
 |----------|-------------|---------|-----------------|
 | `DOCKER_IMAGE_NAME` | Image repository path | `myorg/myapp` | Your registry naming |
-| `DOCKER_IMAGE_TAG` | Image tag | `latest` | Version or `latest` |
+| `DOCKER_IMAGE_TAG` | Optional fixed tag (unset → unique per build) | `latest` | Your choice; prefer unset |
 | `DOCKER_REGISTRY_URL` | Registry URL (optional) | `https://ghcr.io` | Registry docs |
 | `DOCKER_REGISTRY_USERNAME` | Registry user | `myuser` | Registry account |
 | `DOCKER_REGISTRY_TOKEN` | Registry password/token | *(secret)* | Docker Hub / GHCR PAT |
@@ -813,34 +820,55 @@ DeployHub detects whether the server uses Debian-style `sites-available` or RHEL
 
 ### Kubernetes
 
+**Verification:** Real-world verified (including k3s and CI deploys).
+
 **Prerequisites:**
 - [ ] Existing Kubernetes cluster (DeployHub does not provision clusters)
 - [ ] `kubectl` installed and configured on your **local machine** (for `deployhub doctor` / manual `deployhub deploy`)
-- [ ] Cluster reachable from CI (kubeconfig secret or cloud auth)
+- [ ] Cluster reachable from CI (kubeconfig **secret contents** or cloud auth — see `KUBECONFIG` below)
+- [ ] Container registry credentials so the cluster can pull the image you push
+
+**Init prompts (what `deployhub init` asks for Kubernetes):**
+1. Path to kubeconfig file (e.g. `~/.kube/config`)
+2. Kubernetes context
+3. Namespace (defaults to project name)
+4. Container image name
+5. Registry URL (leave empty for Docker Hub)
+6. Registry username (required to push)
+7. Registry token/password (required to push)
+8. Health check URL (optional)
 
 **What DeployHub automates:**
 - Starter `k8s/deployment.yaml` and `k8s/service.yaml` when no manifests exist (skipped if you already have a `k8s/` directory or root-level Kubernetes YAML files)
 - GitHub Actions installs `kubectl` on the CI runner and writes kubeconfig from secrets (no local `kubectl` required for the automated push-to-main deploy path)
 - Lists `kubectl` contexts during `init` for easy selection
 - Auto-detects `~/.kube/config`
-- Complete `.env.example` for kubeconfig, context, namespace
+- Complete `.env.example` for kubeconfig, context, namespace, and registry settings
 - Cluster connectivity test during `init`
+- On deploy: registry login → reuse or build image → push (unique tag unless `DOCKER_IMAGE_TAG` is set) → ensure namespace exists (prompt locally / auto-create in CI) → `kubectl apply` → `kubectl set image` with the full resolved image ref → `kubectl rollout restart` when that ref is unchanged so pods pick up a new digest
 
 **After `init`:**
 1. Verify context: `kubectl config get-contexts`
-2. Create namespace if needed: `kubectl create namespace my-app`
-3. For private registries: create `imagePullSecret` and set `KUBE_IMAGE_PULL_SECRET`
-4. Copy `.env.example` → `.env`; add kubeconfig/auth to GitHub Secrets for CI
-5. Run `deployhub doctor`, then `git push origin main`
+2. Copy `.env.example` → `.env`; set `DOCKER_IMAGE_NAME`, registry username/token, and (for local deploys) `KUBECONFIG` / `KUBE_CONTEXT` / `KUBE_NAMESPACE` as needed
+3. Leave `DOCKER_IMAGE_TAG` unset for a unique tag each build — set it only if you want a fixed tag (DeployHub will still rollout-restart when the full image ref is unchanged)
+4. Namespace is created on first deploy if missing (you will be prompted locally; CI auto-creates). Or create it yourself: `kubectl create namespace my-app`
+5. For private registries: create an `imagePullSecret` and set `KUBE_IMAGE_PULL_SECRET`
+6. Add GitHub Secrets for CI (see table — **`KUBECONFIG` must be the file contents, not a path**)
+7. Run `deployhub doctor`, then `git push origin main`
+
+> **Warning — Service `targetPort`:** the default `targetPort` in generated `k8s/service.yaml` may not match your app's actual exposed port (e.g. a static nginx image serves on port **80**, not the config's default like 3000). Verify and adjust `k8s/service.yaml`'s `targetPort` (and the Deployment `containerPort` if needed) before your first deploy.
 
 | Variable | Description | Example | Where to get it |
 |----------|-------------|---------|-----------------|
-| `KUBECONFIG` | Path to kubeconfig | `~/.kube/config` | Default kubectl config |
+| `KUBECONFIG` | **Local:** path to kubeconfig. **CI (GitHub Secret):** full kubeconfig **file contents** (or base64) — not a path | `~/.kube/config` locally; paste file contents in CI | `~/.kube/config` |
 | `KUBE_CONTEXT` | Context name | `my-cluster` | `kubectl config get-contexts` |
-| `KUBE_NAMESPACE` | Target namespace | `my-app` | `kubectl get namespaces` |
-| `DOCKER_IMAGE_NAME` | Container image | `ghcr.io/org/app` | Your registry |
-| `DOCKER_IMAGE_TAG` | Image tag | `1.0.0` or `latest` | Project version or your choice |
-| `KUBE_IMAGE_PULL_SECRET` | Pull secret name | `regcred` | `kubectl create secret docker-registry` |
+| `KUBE_NAMESPACE` | Target namespace (optional; defaults to project name) | `my-app` | Your choice |
+| `DOCKER_IMAGE_NAME` | Container image repository | `myuser/myapp` or `ghcr.io/org/app` | Your registry |
+| `DOCKER_IMAGE_TAG` | Optional fixed tag (unset → unique per build) | `latest` | Prefer unset |
+| `DOCKER_REGISTRY_URL` | Registry URL (optional; empty = Docker Hub) | `https://ghcr.io` | Registry docs |
+| `DOCKER_REGISTRY_USERNAME` | Registry user (required to push) | `myuser` | Registry account |
+| `DOCKER_REGISTRY_TOKEN` | Registry password/token (required to push) | *(secret)* | Docker Hub token / GHCR PAT |
+| `KUBE_IMAGE_PULL_SECRET` | Pull secret name (optional, private registries) | `regcred` | `kubectl create secret docker-registry` |
 
 ---
 
@@ -966,8 +994,8 @@ Add these secrets in your repository (Settings → Secrets and variables → Act
 | `EC2_INSTANCE_ID`, `AWS_*` | Optional EC2 dynamic IP lookup |
 | `AZURE_SUBSCRIPTION_ID`, `AZURE_RESOURCE_GROUP`, `AZURE_VM_NAME` | Optional Azure VM IP lookup |
 | `GCP_PROJECT_ID`, `GCP_ZONE`, `GCP_INSTANCE_NAME`, `GCP_KEY_FILE` | Optional GCP VM IP lookup |
-| `DOCKER_IMAGE_NAME`, `DOCKER_REGISTRY_*`, `DOCKER_HOST` | Docker deployment |
-| `KUBECONFIG`, `KUBE_CONTEXT`, `KUBE_NAMESPACE` | Kubernetes deployment |
+| `DOCKER_IMAGE_NAME`, `DOCKER_REGISTRY_USERNAME`, `DOCKER_REGISTRY_TOKEN`, `DOCKER_REGISTRY_URL`, `DOCKER_HOST` | Docker deployment (`DOCKER_IMAGE_TAG` optional) |
+| `KUBECONFIG`, `KUBE_CONTEXT`, `KUBE_NAMESPACE`, `DOCKER_IMAGE_NAME`, `DOCKER_REGISTRY_USERNAME`, `DOCKER_REGISTRY_TOKEN`, `DOCKER_REGISTRY_URL`, `DOCKER_IMAGE_TAG`, `KUBE_IMAGE_PULL_SECRET` | Kubernetes — **`KUBECONFIG` in GitHub Secrets must be the kubeconfig file contents (or base64), not a filesystem path**. `DOCKER_IMAGE_TAG`, `KUBE_NAMESPACE`, `DOCKER_REGISTRY_URL`, and `KUBE_IMAGE_PULL_SECRET` are optional |
 
 See [Deployment method guides](#deployment-method-guides) for full per-method variable tables with examples.
 
