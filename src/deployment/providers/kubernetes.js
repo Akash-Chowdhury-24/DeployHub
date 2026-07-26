@@ -5,6 +5,7 @@ import os from 'os';
 import { createLogger } from '../../logger/index.js';
 import { sanitizeK8sName } from '../../utils/kubernetes-manifests.js';
 import { createDockerImageDeployContext } from '../../utils/docker-image-deploy.js';
+import { ensureKubernetesNamespace } from '../../utils/kubernetes-namespace.js';
 
 /**
  * @param {import('../../core/config.js').DeployHubConfig} config
@@ -26,12 +27,22 @@ export function createKubernetesProvider(config, envName, env = process.env) {
   }
 
   /**
+   * Cluster-scoped kubectl args (context only). Used for Namespace get/create.
+   * @param {string[]} baseArgs
+   */
+  function kubectlClusterArgs(baseArgs) {
+    /** @type {string[]} */
+    const args = [...baseArgs];
+    if (context) args.push('--context', context);
+    return args;
+  }
+
+  /**
    * @param {string[]} baseArgs
    */
   function kubectlArgs(baseArgs) {
     /** @type {string[]} */
-    const args = [...baseArgs];
-    if (context) args.push('--context', context);
+    const args = kubectlClusterArgs(baseArgs);
     if (namespace) args.push('--namespace', namespace);
     return args;
   }
@@ -60,6 +71,13 @@ export function createKubernetesProvider(config, envName, env = process.env) {
         'docker compose was used — ensure the cluster can pull the resulting image from your registry.'
       );
     }
+
+    await ensureKubernetesNamespace({
+      namespace,
+      log,
+      kubectlArgs: kubectlClusterArgs,
+      getKubectlEnv,
+    });
 
     const applyTarget = (await fs.pathExists(path.join(manifestDir, 'k8s')))
       ? path.join(manifestDir, 'k8s')

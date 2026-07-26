@@ -2,6 +2,7 @@ import chalk from 'chalk';
 import { execa } from 'execa';
 import fs from 'fs-extra';
 import path from 'path';
+import os from 'os';
 import axios from 'axios';
 import { loadConfig, loadEnv } from '../core/config.js';
 import { testProvider } from '../storage/index.js';
@@ -20,6 +21,7 @@ import {
 } from '../utils/shell-quote.js';
 import { formatPasswordlessSudoGuidance } from '../utils/nginx.js';
 import { checkImagePullability } from '../utils/docker-image-deploy.js';
+import { namespaceExists } from '../utils/kubernetes-namespace.js';
 
 /**
  * @typedef {{ name: string, pass: boolean, message: string }} CheckResult
@@ -409,6 +411,42 @@ async function runDeploymentChecks(config, envName, envConfig) {
             message: `kubectl cluster-info failed — ${msg}. Check KUBECONFIG path and KUBE_CONTEXT.`,
           };
         }
+      })
+    );
+
+    checks.push(
+      await runCheck('Kubernetes namespace', async () => {
+        const ns = process.env.KUBE_NAMESPACE || config.project || 'default';
+        const kubeconfig =
+          process.env.KUBECONFIG || path.join(os.homedir(), '.kube', 'config');
+        const context = process.env.KUBE_CONTEXT || '';
+        const expanded = kubeconfig.replace(/^~/, os.homedir());
+        const kubectlEnv = { ...process.env, KUBECONFIG: path.resolve(expanded) };
+
+        /** @param {string[]} baseArgs */
+        function kubectlClusterArgs(baseArgs) {
+          const args = [...baseArgs];
+          if (context) args.push('--context', context);
+          return args;
+        }
+
+        const exists = await namespaceExists(ns, {
+          kubectlArgs: kubectlClusterArgs,
+          getKubectlEnv: () => kubectlEnv,
+        });
+
+        if (exists) {
+          return {
+            name: 'Kubernetes namespace',
+            pass: true,
+            message: `Namespace '${ns}' exists`,
+          };
+        }
+        return {
+          name: 'Kubernetes namespace',
+          pass: true,
+          message: `Namespace '${ns}' does not exist yet — deploy will prompt locally or auto-create in CI (kubectl create namespace ${ns})`,
+        };
       })
     );
 

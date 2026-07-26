@@ -309,7 +309,7 @@ export const DEPLOYMENT_ENV_DEFS = {
       optionalReason: 'defaults to your project name or "default" if unset',
       comment: [
         'Kubernetes namespace for your deployment.',
-        'Create one first if needed: kubectl create namespace my-app',
+        'If missing, deployhub deploy prompts to create it locally (or auto-creates in CI).',
       ],
       example: 'my-app',
       when: 'optional',
@@ -720,7 +720,7 @@ export const DEPLOYMENT_GUIDE = {
     ],
     after: [
       'Ensure your kubeconfig context points to the correct cluster.',
-      'Create namespace if needed: kubectl create namespace YOUR_NAMESPACE',
+      'Namespace is created on first deploy if missing (prompt locally; auto-create in CI). Or: kubectl create namespace YOUR_NAMESPACE',
       'Copy .env.example to .env and set DOCKER_IMAGE_NAME, DOCKER_REGISTRY_USERNAME, and DOCKER_REGISTRY_TOKEN.',
       'Skipping registry credentials will very likely cause ImagePullBackOff — the cluster cannot see local Docker images.',
       'For private registries: also create kubectl create secret docker-registry ... and set KUBE_IMAGE_PULL_SECRET.',
