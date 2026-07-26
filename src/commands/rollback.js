@@ -8,42 +8,45 @@ import axios from 'axios';
  */
 export function registerRollbackCommand(program) {
   program
-    .command('rollback [version]')
-    .description('Rollback to a previous artifact version')
-    .action(async (version) => {
+    .command('rollback [versionOrBuildId]')
+    .description(
+      'Rollback to a previous artifact build (omit arg = previous build; use exact buildId if semver is ambiguous)'
+    )
+    .action(async (versionOrBuildId) => {
       loadEnv();
       const config = await loadConfig();
 
-      if (!version) {
-        const { listLocalArtifacts } = await import('../artifact/engine.js');
-        const artifacts = await listLocalArtifacts();
-        if (artifacts.length < 2) {
-          console.error(chalk.red('No previous version available for rollback'));
-          process.exit(1);
+      try {
+        const { entry } = await rollbackToVersion(config, versionOrBuildId);
+        if (!versionOrBuildId) {
+          console.log(chalk.gray(`Rolled back to previous build: ${entry.buildId}`));
         }
-        version = artifacts[1].version;
-        console.log(chalk.gray(`Rolling back to previous version: v${version}`));
-      }
 
-      await rollbackToVersion(config, version);
-
-      if (config.healthCheck?.url) {
-        try {
-          const response = await axios.get(config.healthCheck.url, {
-            timeout: (config.healthCheck.timeout || 30) * 1000,
-            validateStatus: () => true,
-          });
-          if (response.status >= 200 && response.status < 400) {
-            console.log(chalk.green(`Health check passed: HTTP ${response.status}`));
-          } else {
-            console.log(chalk.yellow(`Health check returned HTTP ${response.status}`));
+        if (config.healthCheck?.url) {
+          try {
+            const response = await axios.get(config.healthCheck.url, {
+              timeout: (config.healthCheck.timeout || 30) * 1000,
+              validateStatus: () => true,
+            });
+            if (response.status >= 200 && response.status < 400) {
+              console.log(chalk.green(`Health check passed: HTTP ${response.status}`));
+            } else {
+              console.log(chalk.yellow(`Health check returned HTTP ${response.status}`));
+            }
+          } catch (err) {
+            console.log(
+              chalk.yellow(
+                `Health check failed: ${err instanceof Error ? err.message : String(err)}`
+              )
+            );
           }
-        } catch (err) {
-          console.log(chalk.yellow(`Health check failed: ${err instanceof Error ? err.message : String(err)}`));
         }
-      }
 
-      console.log(chalk.green(`✓ Rolled back to v${version}`));
+        console.log(chalk.green(`✓ Rolled back to ${entry.buildId}`));
+      } catch (err) {
+        console.error(chalk.red(err instanceof Error ? err.message : String(err)));
+        process.exit(1);
+      }
     });
 }
 

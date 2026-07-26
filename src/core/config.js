@@ -47,6 +47,7 @@ const EnvironmentSchema = z.object({
 const ConfigSchema = z.object({
   project: z.string(),
   version: z.string().optional(),
+  buildId: z.string().optional(),
   projectType: z.enum(['frontend', 'backend', 'both']).default('frontend'),
   framework: z.string().optional(),
   language: z.string().optional(),

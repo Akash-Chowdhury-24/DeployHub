@@ -1,4 +1,6 @@
 import path from 'path';
+import fs from 'fs-extra';
+import os from 'os';
 import { createLogger } from '../logger/index.js';
 import { createAwsProvider } from './providers/aws.js';
 import { createLocalProvider } from './providers/local.js';
@@ -7,8 +9,19 @@ import { createGcpProvider } from './providers/gcp.js';
 import { createGdriveProvider } from './providers/gdrive.js';
 import { createDropboxProvider } from './providers/dropbox.js';
 import { createFtpProvider } from './providers/ftp.js';
+import {
+  buildArtifactRemoteKey,
+  historyRemoteKey,
+  latestArtifactRemoteKey,
+  legacyArtifactRemoteKey,
+  resolveBuildId,
+} from '../utils/build-id.js';
+import {
+  parseArtifactHistory,
+  prependHistoryEntry,
+} from '../utils/artifact-history.js';
 
-/** @type {Record<string, (env?: Record<string, string>) => import('./providers/aws.js').default>} */
+/** @type {Record<string, (env?: Record<string, string>) => ReturnType<typeof createAwsProvider>>} */
 const PROVIDER_FACTORIES = {
   aws: createAwsProvider,
   local: createLocalProvider,
@@ -32,21 +45,112 @@ export function getStorageProvider(name, env = process.env) {
 }
 
 /**
+ * @param {import('../core/config.js').DeployHubConfig} config
+ */
+function ensureBuildIdentity(config) {
+  if (!config.version) {
+    config.version = '0.0.0';
+  }
+  if (!config.buildId) {
+    const { buildId } = resolveBuildId({ semver: config.version });
+    config.buildId = buildId;
+  }
+}
+
+/**
+ * Read history.json from the first provider that has it.
+ * @param {string[]} providers
+ * @param {string} project
+ * @returns {Promise<import('../utils/artifact-history.js').ArtifactHistoryEntry[]>}
+ */
+export async function loadArtifactHistory(providers, project) {
+  const key = historyRemoteKey(project);
+  const tmp = path.join(os.tmpdir(), `deployhub-history-${Date.now()}.json`);
+  try {
+    for (const name of providers) {
+      const provider = getStorageProvider(name);
+      const exists = await provider.verify(key);
+      if (!exists) continue;
+      await provider.download(key, tmp);
+      const raw = await fs.readFile(tmp, 'utf8');
+      return parseArtifactHistory(raw);
+    }
+  } catch {
+    return [];
+  } finally {
+    await fs.remove(tmp).catch(() => {});
+  }
+  return [];
+}
+
+/**
+ * @param {ReturnType<typeof getStorageProvider>} provider
+ * @param {string} project
+ * @param {import('../utils/artifact-history.js').ArtifactHistoryEntry[]} history
+ */
+async function writeArtifactHistory(provider, project, history) {
+  const key = historyRemoteKey(project);
+  const tmp = path.join(os.tmpdir(), `deployhub-history-write-${Date.now()}.json`);
+  await fs.writeJson(tmp, history, { spaces: 2 });
+  try {
+    await provider.upload(tmp, key);
+  } finally {
+    await fs.remove(tmp).catch(() => {});
+  }
+}
+
+/**
+ * Upload artifact zip under a unique build key, update latest/ pointer and history.json.
+ * Does NOT write legacy `{project}/v{semver}/artifact.zip` (retired for new uploads;
+ * legacy keys remain readable for older artifacts).
+ *
  * @param {string[]} providers
  * @param {string} zipPath
  * @param {import('../core/config.js').DeployHubConfig} config
  */
 export async function uploadToAll(providers, zipPath, config) {
   const log = createLogger('storage');
-  const remoteKey = `${config.project}/v${config.version}/artifact.zip`;
+  ensureBuildIdentity(config);
+
+  const buildId = /** @type {string} */ (config.buildId);
+  const remoteKey = buildArtifactRemoteKey(config.project, buildId);
+  const latestKey = latestArtifactRemoteKey(config.project);
+  const entry = {
+    buildId,
+    semver: String(config.version || '0.0.0').replace(/^v/i, ''),
+    uploadedAt: new Date().toISOString(),
+    remoteKey,
+  };
 
   const uploads = providers.map(async (name) => {
     try {
       const provider = getStorageProvider(name);
-      log.info(`Uploading to ${name}...`);
+      log.info(`Uploading build ${buildId} to ${name}...`);
       await provider.upload(zipPath, remoteKey);
-      log.success(`Uploaded to ${name}`);
-      return { name, success: true };
+      // Intentional overwrite: mutable "current" pointer, not a versioned backup.
+      await provider.upload(zipPath, latestKey);
+
+      let history = [];
+      try {
+        const histKey = historyRemoteKey(config.project);
+        if (await provider.verify(histKey)) {
+          const tmp = path.join(os.tmpdir(), `deployhub-hist-${name}-${Date.now()}.json`);
+          try {
+            await provider.download(histKey, tmp);
+            history = parseArtifactHistory(await fs.readFile(tmp, 'utf8'));
+          } finally {
+            await fs.remove(tmp).catch(() => {});
+          }
+        }
+      } catch {
+        history = [];
+      }
+
+      const next = prependHistoryEntry(history, entry);
+      await writeArtifactHistory(provider, config.project, next);
+
+      log.success(`Uploaded to ${name} (${remoteKey})`);
+      return { name, success: true, remoteKey, buildId };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       throw new Error(`Storage upload to ${name} failed: ${message}`);
@@ -71,6 +175,27 @@ export async function downloadFromFirst(providers, remoteKey, localPath) {
     }
   }
   throw new Error(`Artifact not found in any configured storage provider`);
+}
+
+/**
+ * Download a build by history entry, with legacy key fallback for pre-buildId uploads.
+ *
+ * @param {string[]} providers
+ * @param {import('../core/config.js').DeployHubConfig} config
+ * @param {{ remoteKey: string, buildId: string, semver: string }} entry
+ * @param {string} localPath
+ */
+export async function downloadArtifactEntry(providers, config, entry, localPath) {
+  try {
+    return await downloadFromFirst(providers, entry.remoteKey, localPath);
+  } catch {
+    const legacyKey = legacyArtifactRemoteKey(config.project, entry.semver);
+    const log = createLogger('storage');
+    log.warn(
+      `Build key not found; trying legacy key ${legacyKey} (may be an overwritten single-slot artifact)`
+    );
+    return downloadFromFirst(providers, legacyKey, localPath);
+  }
 }
 
 /**
@@ -99,11 +224,18 @@ export async function testAllProviders(providers) {
     }
     return {
       name,
-      status: 'error',
-      error: result.reason?.message || String(result.reason),
+      status: 'failed',
+      error: result.reason instanceof Error ? result.reason.message : String(result.reason),
     };
   });
 }
 
-export { PROVIDER_FACTORIES };
-export default { getStorageProvider, uploadToAll, downloadFromFirst, testProvider, testAllProviders };
+export default {
+  getStorageProvider,
+  uploadToAll,
+  downloadFromFirst,
+  downloadArtifactEntry,
+  loadArtifactHistory,
+  testProvider,
+  testAllProviders,
+};

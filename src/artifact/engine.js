@@ -5,6 +5,7 @@ import { execa } from 'execa';
 import { createLogger } from '../logger/index.js';
 import { generateChecksums, formatChecksums } from '../utils/checksums.js';
 import { getProjectVersion } from '../utils/version.js';
+import { resolveBuildId } from '../utils/build-id.js';
 import { generateNginxConfig } from '../utils/nginx.js';
 import {
   ensureDeployScaffold,
@@ -238,12 +239,13 @@ async function stageBackendArtifact(cwd, stagingDir, config) {
  */
 export function getArtifactDir(config, cwd = process.cwd()) {
   const date = new Date().toISOString().slice(0, 10);
+  const buildId = config.buildId || config.version || '0.0.0';
   return path.join(
     cwd,
     'artifact',
     config.project,
     date,
-    `v${config.version}`
+    `v${buildId}`
   );
 }
 
@@ -257,6 +259,10 @@ export async function createArtifact(config, deployedTargets = [], cwd = process
   const log = createLogger('artifact');
   const version = config.version || (await getProjectVersion(cwd));
   config.version = version;
+  if (!config.buildId) {
+    const { buildId } = resolveBuildId({ semver: version });
+    config.buildId = buildId;
+  }
 
   const artifactDir = getArtifactDir(config, cwd);
   const stagingDir = path.join(artifactDir, '_staging');
@@ -266,7 +272,7 @@ export async function createArtifact(config, deployedTargets = [], cwd = process
   const artifactType = resolveArtifactType(config);
   const settings = resolveBuildSettings(config);
 
-  log.info(`Staging ${projectType} artifact...`);
+  log.info(`Staging ${projectType} artifact (buildId=${config.buildId})...`);
 
   await ensureDeployScaffold(cwd, config, config.environments || {}, { silent: false });
 
@@ -288,6 +294,7 @@ export async function createArtifact(config, deployedTargets = [], cwd = process
   const metadata = {
     project: config.project,
     version,
+    buildId: config.buildId,
     timestamp,
     gitCommit: git.commit,
     branch: git.branch,

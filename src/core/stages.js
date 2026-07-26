@@ -6,6 +6,7 @@ import { deployToAll } from '../deployment/index.js';
 import { sendNotifications } from '../notifications/index.js';
 import axios from 'axios';
 import { getProjectVersion } from '../utils/version.js';
+import { resolveBuildId } from '../utils/build-id.js';
 import { ensureDeployScaffold } from '../utils/scaffold.js';
 
 /**
@@ -41,8 +42,10 @@ export function buildPipelineStages(config, cwd, state) {
             ctx.config.port = detected.port;
           }
         }
-        // Resolve version before docker so pipeline build and deploy share the same tag
+        // Semver label (package.json) + unique buildId (shared with image tag when DOCKER_IMAGE_TAG unset)
         ctx.config.version = await getProjectVersion(ctx.cwd);
+        const { buildId } = resolveBuildId({ semver: ctx.config.version });
+        ctx.config.buildId = buildId;
         const scaffold = await ensureDeployScaffold(
           ctx.cwd,
           ctx.config,
@@ -122,6 +125,10 @@ export function buildPipelineStages(config, cwd, state) {
       async run(ctx) {
         if (!ctx.config.version) {
           ctx.config.version = await getProjectVersion(ctx.cwd);
+        }
+        if (!ctx.config.buildId) {
+          const { buildId } = resolveBuildId({ semver: ctx.config.version });
+          ctx.config.buildId = buildId;
         }
         const result = await createArtifact(
           ctx.config,

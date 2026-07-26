@@ -225,10 +225,12 @@ Or push to `main` / `master` — the generated workflow runs the same command.
 **Useful follow-up commands:**
 
 ```bash
-deployhub artifact list              # see uploaded versions
-deployhub artifact restore v1.2.3    # download a past build
+deployhub artifact list              # local artifacts
+deployhub artifact list --remote     # include storage history.json
+deployhub artifact restore <buildId> # download a past build
 deployhub deploy                     # deploy latest artifact without rebuilding
-deployhub rollback v1.2.2            # roll back on server
+deployhub rollback                   # previous build from history
+deployhub rollback <buildId>         # exact build (required if semver is ambiguous)
 deployhub logs                       # last deployment logs
 ```
 
@@ -269,7 +271,17 @@ deployhub doctor
 deployhub build
 ```
 
-Artifacts appear under `artifact/{projectName}/{date}/v{version}/` locally **and** in your S3 bucket.
+Artifacts appear under `artifact/{projectName}/{date}/v{buildId}/` locally.
+
+**Remote storage** (S3 and other providers) uses a different layout:
+
+```text
+{project}/builds/{buildId}/artifact.zip   # immutable per CI/build
+{project}/history.json                    # newest-first index for rollback / list --remote
+{project}/latest/artifact.zip             # mutable pointer overwritten every upload (NOT a backup)
+```
+
+`buildId` is unique per pipeline run (e.g. `1.0.6-a1b2c3d`) even if `package.json` semver is unchanged. Legacy keys `{project}/v{semver}/artifact.zip` are no longer written; they remain readable for older uploads only.
 
 ### Same steps for other languages
 
@@ -943,12 +955,12 @@ Run `deployhub doctor` after any config change.
 | `deployhub init` | Interactive project setup |
 | `deployhub build` | Full pipeline: detect → install → test → build → artifact → storage → deploy |
 | `deployhub artifact create` | Create artifact from current build |
-| `deployhub artifact list` | List all artifacts |
-| `deployhub artifact restore <version>` | Download and extract an artifact |
+| `deployhub artifact list [--remote]` | List local artifacts; `--remote` merges storage `history.json` |
+| `deployhub artifact restore <buildId\|semver>` | Download and extract an artifact |
 | `deployhub storage add <provider>` | Add storage provider credentials |
 | `deployhub storage list` | List storage providers and connection status |
 | `deployhub deploy` | Deploy latest artifact |
-| `deployhub rollback [version]` | Rollback to a previous version |
+| `deployhub rollback [buildId\|semver]` | Previous build, or exact buildId (ambiguous semver lists matches and exits) |
 | `deployhub logs` | Show logs from last deployment |
 | `deployhub doctor` | Pre-flight checks |
 | `deployhub verify` | Health check on configured endpoint |
@@ -1029,13 +1041,13 @@ If checks fail:
 
 ## Artifact Structure
 
-Each build creates:
+Each build creates a **local** directory:
 
 ```
 artifact/
   {projectName}/
     {YYYY-MM-DD}/
-      v{semver}/
+      v{buildId}/
         artifact.zip
         metadata.json
         logs.txt
@@ -1044,6 +1056,18 @@ artifact/
         release-notes.md
         README.md
 ```
+
+`buildId` looks like `{semver}-{gitSha|ciId|timestamp}` (unique every pipeline run).
+
+**Remote keys** (all storage providers):
+
+```
+{project}/builds/{buildId}/artifact.zip
+{project}/history.json
+{project}/latest/artifact.zip    # overwritten every build — convenience pointer only, not version history
+```
+
+Legacy (read-only fallback, no longer written): `{project}/v{semver}/artifact.zip`
 
 `deployment.json` records server deployment metadata per environment:
 
