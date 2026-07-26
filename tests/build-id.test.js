@@ -26,17 +26,22 @@ describe('buildId resolution', () => {
     );
   });
 
-  test('same package.json semver still yields different buildIds when stamp differs', () => {
+  test('when no git SHA or CI id is available, differing timestamps yield different buildIds', () => {
+    // Empty env avoids CI vars (e.g. GITHUB_SHA during npm publish); null git forces timestamp tier.
     const first = resolveBuildId({
       semver: '0.0.0',
+      env: {},
       getGitShortSha: () => null,
       now: () => new Date(2026, 6, 26, 10, 0, 0, 1),
     });
     const second = resolveBuildId({
       semver: '0.0.0',
+      env: {},
       getGitShortSha: () => null,
       now: () => new Date(2026, 6, 26, 10, 0, 0, 2),
     });
+    expect(first.source).toBe('timestamp');
+    expect(second.source).toBe('timestamp');
     expect(first.buildId).not.toBe(second.buildId);
     expect(first.semver).toBe(second.semver);
   });
