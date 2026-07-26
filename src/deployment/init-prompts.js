@@ -96,6 +96,23 @@ async function promptKubernetesDeployment(base, projectName, projectType) {
     },
     {
       type: 'input',
+      name: 'dockerRegistryUrl',
+      message: 'Registry URL (leave empty for Docker Hub):',
+    },
+    {
+      type: 'input',
+      name: 'dockerRegistryUsername',
+      message:
+        'Registry username (required — needed to push your image so the cluster can pull it):',
+    },
+    {
+      type: 'password',
+      name: 'dockerRegistryToken',
+      message:
+        'Registry token/password (required — needed to push your image so the cluster can pull it):',
+    },
+    {
+      type: 'input',
       name: 'healthUrl',
       message: 'Health check URL (optional, e.g. https://myapp.example.com/health):',
     },
@@ -115,6 +132,9 @@ async function promptKubernetesDeployment(base, projectName, projectType) {
     kubeContext: kubeAnswers.kubeContext,
     kubeNamespace: kubeAnswers.kubeNamespace,
     dockerImageName: kubeAnswers.dockerImageName,
+    dockerRegistryUrl: kubeAnswers.dockerRegistryUrl,
+    dockerRegistryUsername: kubeAnswers.dockerRegistryUsername,
+    dockerRegistryToken: kubeAnswers.dockerRegistryToken,
     healthUrl: kubeAnswers.healthUrl,
   };
 }
@@ -366,6 +386,7 @@ export function buildServerEnvEntry(
     envEntry.kubeContext = deployAnswers.kubeContext;
     envEntry.kubeNamespace = deployAnswers.kubeNamespace || projectName;
     envEntry.dockerImageName = deployAnswers.dockerImageName || projectName;
+    envEntry.dockerRegistryUrl = deployAnswers.dockerRegistryUrl || '';
     return envEntry;
   }
 
@@ -418,7 +439,7 @@ export function buildServerEnvEntry(
  * @returns {Record<string, string>|null}
  */
 export function getDockerEnvSecrets(deployAnswers) {
-  if (deployAnswers.deployType !== 'docker') return null;
+  if (!['docker', 'kubernetes'].includes(deployAnswers.deployType)) return null;
 
   /** @type {Record<string, string>} */
   const vars = {};

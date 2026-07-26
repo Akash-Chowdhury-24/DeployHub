@@ -4,6 +4,7 @@ import path from 'path';
 import os from 'os';
 import { createLogger } from '../../logger/index.js';
 import { sanitizeK8sName } from '../../utils/kubernetes-manifests.js';
+import { createDockerImageDeployContext } from '../../utils/docker-image-deploy.js';
 
 /**
  * @param {import('../../core/config.js').DeployHubConfig} config
@@ -12,6 +13,7 @@ import { sanitizeK8sName } from '../../utils/kubernetes-manifests.js';
  */
 export function createKubernetesProvider(config, envName, env = process.env) {
   const log = createLogger('kubernetes');
+  const imageOps = createDockerImageDeployContext(config, env, log);
 
   const kubeconfig = env.KUBECONFIG || path.join(os.homedir(), '.kube', 'config');
   const context = env.KUBE_CONTEXT || '';
@@ -48,6 +50,14 @@ export function createKubernetesProvider(config, envName, env = process.env) {
     if (!hasManifests) {
       throw new Error(
         'No Kubernetes manifests found in artifact. Add .yaml files or a k8s/ directory to your project.'
+      );
+    }
+
+    log.info(`Ensuring container image ${imageOps.fullImage} is built and pushed before apply...`);
+    const imageResult = await imageOps.ensureImageReadyForDeploy(artifactDir);
+    if (imageResult.ranCompose) {
+      log.warn(
+        'docker compose was used — ensure the cluster can pull the resulting image from your registry.'
       );
     }
 

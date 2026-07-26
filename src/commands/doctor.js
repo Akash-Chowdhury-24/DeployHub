@@ -19,6 +19,7 @@ import {
   formatDeployPathWriteFailure,
 } from '../utils/shell-quote.js';
 import { formatPasswordlessSudoGuidance } from '../utils/nginx.js';
+import { checkImagePullability } from '../utils/docker-image-deploy.js';
 
 /**
  * @typedef {{ name: string, pass: boolean, message: string }} CheckResult
@@ -408,6 +409,30 @@ async function runDeploymentChecks(config, envName, envConfig) {
             message: `kubectl cluster-info failed — ${msg}. Check KUBECONFIG path and KUBE_CONTEXT.`,
           };
         }
+      })
+    );
+
+    checks.push(
+      await runCheck('Container image pullable', async () => {
+        const result = await checkImagePullability(config, process.env);
+        return {
+          name: 'Container image pullable',
+          pass: result.ok,
+          message: result.message,
+        };
+      })
+    );
+  }
+
+  if (deployType === 'docker' && process.env.DOCKER_REGISTRY_USERNAME && process.env.DOCKER_REGISTRY_TOKEN) {
+    checks.push(
+      await runCheck('Container image pullable', async () => {
+        const result = await checkImagePullability(config, process.env);
+        return {
+          name: 'Container image pullable',
+          pass: result.ok,
+          message: result.message,
+        };
       })
     );
   }

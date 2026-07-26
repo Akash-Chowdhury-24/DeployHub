@@ -316,12 +316,11 @@ export const DEPLOYMENT_ENV_DEFS = {
     },
     {
       key: 'DOCKER_IMAGE_NAME',
-      optionalReason: 'only required if your manifests need an image override at deploy time',
       comment: [
-        'Container image to deploy (must match manifests or be overridden).',
+        'Container image to build, push, and deploy.',
+        'Kubernetes clusters pull from a registry — local-only Docker images will not work.',
       ],
       example: 'ghcr.io/myorg/myapp',
-      when: 'optional',
     },
     {
       key: 'DOCKER_IMAGE_TAG',
@@ -331,6 +330,30 @@ export const DEPLOYMENT_ENV_DEFS = {
       ],
       example: 'latest',
       when: 'optional',
+    },
+    {
+      key: 'DOCKER_REGISTRY_URL',
+      optionalReason: 'leave empty for Docker Hub',
+      comment: [
+        'Container registry URL. Leave empty for Docker Hub.',
+        'Examples: https://index.docker.io/v1/ | https://ghcr.io',
+      ],
+      when: 'optional',
+    },
+    {
+      key: 'DOCKER_REGISTRY_USERNAME',
+      comment: [
+        'Registry username — required to push so the cluster can pull your image.',
+        'Even public Docker Hub repos require authentication to push.',
+      ],
+      example: 'myuser',
+    },
+    {
+      key: 'DOCKER_REGISTRY_TOKEN',
+      comment: [
+        'Registry password or personal access token — required to push so the cluster can pull.',
+        'Docker Hub: access token. GHCR: GitHub PAT with write:packages.',
+      ],
     },
     {
       key: 'KUBE_IMAGE_PULL_SECRET',
@@ -683,21 +706,27 @@ export const DEPLOYMENT_GUIDE = {
     before: [
       'An existing Kubernetes cluster (DeployHub does not provision clusters).',
       'kubectl installed and configured (kubectl cluster-info works).',
+      'A container registry account — clusters pull images from a registry, not your local Docker daemon.',
+      'Registry credentials (username + token) to push your image so the cluster can pull it.',
       'Kubernetes manifests (Deployment, Service, etc.) in your repo or artifact.',
       'Cluster access from CI: kubeconfig or cloud-specific auth for GitHub Actions.',
     ],
     automates: [
       'Lists available kubectl contexts during init so you pick from a menu.',
       'Auto-detects ~/.kube/config if present.',
-      'Generates complete .env.example for kubeconfig, context, and namespace.',
+      'Generates complete .env.example for kubeconfig, context, namespace, and registry settings.',
       'Tests cluster connectivity during init.',
+      'Builds and pushes your container image during deployhub build/deploy (pipeline docker stage).',
     ],
     after: [
       'Ensure your kubeconfig context points to the correct cluster.',
       'Create namespace if needed: kubectl create namespace YOUR_NAMESPACE',
-      'For private registries: kubectl create secret docker-registry ... and set KUBE_IMAGE_PULL_SECRET.',
-      'Copy .env.example to .env; add KUBECONFIG contents or auth secrets to GitHub Actions.',
-      'Run deployhub doctor, then git push origin main.',
+      'Copy .env.example to .env and set DOCKER_IMAGE_NAME, DOCKER_REGISTRY_USERNAME, and DOCKER_REGISTRY_TOKEN.',
+      'Skipping registry credentials will very likely cause ImagePullBackOff — the cluster cannot see local Docker images.',
+      'For private registries: also create kubectl create secret docker-registry ... and set KUBE_IMAGE_PULL_SECRET.',
+      'Add the GitHub Secrets listed below (Settings → Secrets and variables → Actions).',
+      'Run deployhub doctor to verify cluster access and that your image is pullable.',
+      'git push origin main to trigger your first deployment.',
     ],
   },
 };
