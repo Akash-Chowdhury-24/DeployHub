@@ -2,6 +2,7 @@ import { S3Client, HeadBucketCommand, DeleteObjectCommand, GetObjectCommand } fr
 import { Upload } from '@aws-sdk/lib-storage';
 import fs from 'fs-extra';
 import path from 'path';
+import { isNotFoundStorageError } from '../storage-errors.js';
 
 /**
  * @param {Record<string, string>} env
@@ -65,6 +66,8 @@ export function createAwsProvider(env = process.env) {
 
   /**
    * @param {string} remoteKey
+   * @returns {Promise<boolean>} true if object exists; false if missing.
+   *   Auth / network / permission errors are rethrown (not treated as missing).
    */
   async function verify(remoteKey) {
     try {
@@ -72,8 +75,9 @@ export function createAwsProvider(env = process.env) {
         new GetObjectCommand({ Bucket: bucket, Key: remoteKey })
       );
       return true;
-    } catch {
-      return false;
+    } catch (err) {
+      if (isNotFoundStorageError(err)) return false;
+      throw err;
     }
   }
 

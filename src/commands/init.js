@@ -535,6 +535,7 @@ export function registerInitCommand(program) {
       console.log(chalk.bold('Generated files:'));
       console.log('  • deployhub.config.json');
       console.log('  • .github/workflows/deployhub.yml');
+      console.log('  • .github/workflows/deployhub-rollback.yml');
       console.log('  • .env.example');
       console.log('');
       printAuthorFooter();

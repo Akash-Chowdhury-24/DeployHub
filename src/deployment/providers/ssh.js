@@ -405,7 +405,7 @@ export function createSshProvider(config, envName, env = process.env) {
     return result.code === 0 && result.stdout.trim() === 'yes';
   }
 
-  async function rollback(artifactDir) {
+  async function rollback(artifactDir, _meta) {
     await deploy(artifactDir);
   }
 

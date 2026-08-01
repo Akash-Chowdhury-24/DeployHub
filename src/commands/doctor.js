@@ -7,7 +7,7 @@ import axios from 'axios';
 import { loadConfig, loadEnv } from '../core/config.js';
 import { testProvider } from '../storage/index.js';
 import { getDeploymentProvider } from '../deployment/index.js';
-import { PROVIDER_ENV_MAP } from '../utils/github-actions.js';
+import { PROVIDER_ENV_MAP, getRollbackWorkflowDoctorCheck } from '../utils/github-actions.js';
 import { printDoctorFooter } from '../utils/author.js';
 import { createLocalProvider } from '../storage/providers/local.js';
 import {
@@ -888,10 +888,27 @@ export function registerDoctorCommand(program) {
           return {
             name: 'GitHub Actions',
             pass: false,
-            message: 'Workflow file missing — run deployhub init',
+            message: 'Workflow file missing — run deployhub init or deployhub sync-workflows',
           };
         })
       );
+
+      const hasStorage = (config.storage || []).length > 0;
+      const hasDeploy = (config.deploy || []).length > 0;
+      if (hasStorage && hasDeploy) {
+        results.push(
+          await runCheck('Rollback workflow', async () => {
+            const check = await getRollbackWorkflowDoctorCheck(cwd, config);
+            return (
+              check || {
+                name: 'Rollback workflow',
+                pass: true,
+                message: 'Skipped',
+              }
+            );
+          })
+        );
+      }
 
       results.push(
         await runCheck('Storage write', async () => {

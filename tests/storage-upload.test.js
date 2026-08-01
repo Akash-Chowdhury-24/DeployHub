@@ -86,8 +86,9 @@ describe('storage uploadToAll build keys + history', () => {
     expect(mem.store.has('demo-app/v0.0.0/artifact.zip')).toBe(false);
 
     const history = await loadArtifactHistory(['local'], 'demo-app');
-    expect(history[0].buildId).toBe('0.0.0-abc111');
-    expect(history[0].remoteKey).toBe('demo-app/builds/0.0.0-abc111/artifact.zip');
+    expect(history.entries[0].buildId).toBe('0.0.0-abc111');
+    expect(history.entries[0].remoteKey).toBe('demo-app/builds/0.0.0-abc111/artifact.zip');
+    expect(history.source).toBe('local');
   });
 
   test('second upload with same semver does not overwrite first build key', async () => {
@@ -106,7 +107,8 @@ describe('storage uploadToAll build keys + history', () => {
     expect(mem.store.has('demo-app/builds/0.0.0-second/artifact.zip')).toBe(true);
 
     const history = await loadArtifactHistory(['local'], 'demo-app');
-    expect(history.map((h) => h.buildId)).toEqual(['0.0.0-second', '0.0.0-first']);
+    expect(history.entries.map((h) => h.buildId)).toEqual(['0.0.0-second', '0.0.0-first']);
+    expect(history.source).toBe('local');
   });
 
   test('latest pointer is overwritten on each upload', async () => {
@@ -128,5 +130,89 @@ describe('storage uploadToAll build keys + history', () => {
     } finally {
       await fs.remove(zip2).catch(() => {});
     }
+  });
+});
+
+describe('loadArtifactHistory empty vs error', () => {
+  beforeEach(() => {
+    mockProviders.clear();
+  });
+
+  test('returns empty array when history.json is genuinely missing', async () => {
+    const mem = createMemoryProvider();
+    mockProviders.set('aws', mem);
+
+    const history = await loadArtifactHistory(['aws'], 'demo-app');
+    expect(history).toEqual({ entries: [], source: null });
+  });
+
+  test('throws a clear credential-style error when verify fails with Access Denied', async () => {
+    mockProviders.set('aws', {
+      async upload() {},
+      async download() {},
+      async verify() {
+        const err = new Error('Access Denied');
+        err.name = 'AccessDenied';
+        throw err;
+      },
+      async delete() {},
+      async testConnection() {},
+    });
+
+    await expect(loadArtifactHistory(['aws'], 'demo-app')).rejects.toThrow(
+      /Could not check remote history via aws:.*Access Denied.*credentials/
+    );
+  });
+
+  test('throws when provider factory / credentials are incomplete', async () => {
+    // No mock registered for azure → createAzureProvider from mock returns undefined
+    // Use a provider that throws on construction via verify path: getStorageProvider returns
+    // a broken provider. Simulate factory-level failure by making createAwsProvider throw.
+    mockProviders.set('aws', null);
+
+    await expect(loadArtifactHistory(['aws'], 'demo-app')).rejects.toThrow(
+      /Could not check remote history via aws/
+    );
+  });
+
+  test('throws on download failure after verify succeeds', async () => {
+    mockProviders.set('azure', {
+      async upload() {},
+      async download() {
+        throw new Error('NetworkingError: socket hang up');
+      },
+      async verify() {
+        return true;
+      },
+      async delete() {},
+      async testConnection() {},
+    });
+
+    await expect(loadArtifactHistory(['azure'], 'proj')).rejects.toThrow(
+      /Could not check remote history via azure:.*socket hang up/
+    );
+  });
+
+  test('skips missing on first provider and reads history from second', async () => {
+    const empty = createMemoryProvider();
+    const filled = createMemoryProvider();
+    filled.store.set(
+      'demo/history.json',
+      JSON.stringify([
+        {
+          buildId: '1.0.0-x',
+          semver: '1.0.0',
+          uploadedAt: '2026-01-01T00:00:00.000Z',
+          remoteKey: 'demo/builds/1.0.0-x/artifact.zip',
+        },
+      ])
+    );
+    mockProviders.set('aws', empty);
+    mockProviders.set('azure', filled);
+
+    const history = await loadArtifactHistory(['aws', 'azure'], 'demo');
+    expect(history.entries).toHaveLength(1);
+    expect(history.entries[0].buildId).toBe('1.0.0-x');
+    expect(history.source).toBe('azure');
   });
 });

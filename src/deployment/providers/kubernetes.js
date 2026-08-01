@@ -5,6 +5,7 @@ import os from 'os';
 import { createLogger } from '../../logger/index.js';
 import { sanitizeK8sName } from '../../utils/kubernetes-manifests.js';
 import { createDockerImageDeployContext } from '../../utils/docker-image-deploy.js';
+import { resolveDockerImageRefForTag } from '../../utils/docker-image.js';
 import { ensureKubernetesNamespace } from '../../utils/kubernetes-namespace.js';
 import { syncKubernetesDeploymentImage } from '../../utils/kubernetes-deploy-image.js';
 
@@ -50,9 +51,23 @@ export function createKubernetesProvider(config, envName, env = process.env) {
 
   /**
    * @param {string} artifactDir
+   * @param {{ fullImage?: string, skipImageReuse?: boolean }} [options]
    */
-  async function deploy(artifactDir) {
+  async function deploy(artifactDir, options = {}) {
+    const imageRef = options.fullImage || imageOps.fullImage;
+    const isRollbackRedeploy = Boolean(options.skipImageReuse);
+
     log.info(`Deploying to Kubernetes (namespace: ${namespace}${context ? `, context: ${context}` : ''})...`);
+
+    // Rollback always rebuilds and must push — without registry creds the cluster
+    // cannot pull the new tag and would sit in ImagePullBackOff after a false success.
+    if (isRollbackRedeploy && !imageOps.hasRegistryCredentials()) {
+      throw new Error(
+        'Kubernetes rollback requires DOCKER_REGISTRY_USERNAME and DOCKER_REGISTRY_TOKEN ' +
+          `so the rebuilt image (${imageRef}) can be pushed for the cluster to pull. ` +
+          'Set those credentials and retry.'
+      );
+    }
 
     const manifestDir = artifactDir;
     const hasManifests =
@@ -65,8 +80,11 @@ export function createKubernetesProvider(config, envName, env = process.env) {
       );
     }
 
-    log.info(`Ensuring container image ${imageOps.fullImage} is built and pushed before apply...`);
-    const imageResult = await imageOps.ensureImageReadyForDeploy(artifactDir);
+    log.info(`Ensuring container image ${imageRef} is built and pushed before apply...`);
+    const imageResult = await imageOps.ensureImageReadyForDeploy(artifactDir, {
+      fullImage: options.fullImage,
+      skipImageReuse: options.skipImageReuse,
+    });
     if (imageResult.ranCompose) {
       log.warn(
         'docker compose was used — ensure the cluster can pull the resulting image from your registry.'
@@ -93,23 +111,60 @@ export function createKubernetesProvider(config, envName, env = process.env) {
     // If the live ref already equals fullImage, rollout restart so a new digest is pulled.
     await syncKubernetesDeploymentImage({
       deploymentName,
-      fullImage: imageOps.fullImage,
+      fullImage: imageRef,
       kubectlArgs,
       getKubectlEnv,
       log,
     });
 
+    // Rollback-only safety net: wait until pods are actually healthy (catches ImagePullBackOff).
+    if (isRollbackRedeploy) {
+      const timeout = '120s';
+      log.info(
+        `Waiting for deployment/${deploymentName} rollout to complete (timeout ${timeout})...`
+      );
+      try {
+        await execa(
+          'kubectl',
+          kubectlArgs([
+            'rollout',
+            'status',
+            `deployment/${deploymentName}`,
+            `--timeout=${timeout}`,
+          ]),
+          { stdio: 'inherit', env: getKubectlEnv() }
+        );
+      } catch (err) {
+        const detail = err instanceof Error ? err.message : String(err);
+        throw new Error(
+          `Kubernetes rollback failed: deployment/${deploymentName} did not become healthy within ${timeout}. ` +
+            `The cluster may be unable to pull ${imageRef} (ImagePullBackOff) or pods are failing. ${detail}`
+        );
+      }
+    }
+
     log.success('Kubernetes deployment complete');
   }
 
-  async function rollback(artifactDir) {
-    log.info('Rolling back Kubernetes deployment...');
-    await execa('kubectl', kubectlArgs(['rollout', 'undo', `deployment/${deploymentName}`]), {
-      stdio: 'inherit',
-      env: getKubectlEnv(),
-    }).catch(async () => {
-      log.warn('kubectl rollout undo failed — redeploying previous artifact instead');
-      await deploy(artifactDir);
+  /**
+   * Artifact-based rollback: restore buildId X's code and image (not cluster undo history).
+   * @param {string} artifactDir
+   * @param {{ buildId?: string, semver?: string, remoteKey?: string }} [meta]
+   */
+  async function rollback(artifactDir, meta = {}) {
+    if (!meta.buildId) {
+      throw new Error(
+        'Kubernetes rollback requires buildId from the restored artifact history entry'
+      );
+    }
+
+    const rollbackImage = resolveDockerImageRefForTag(config, env, meta.buildId).fullImage;
+    log.info(
+      `Rolling back Kubernetes to buildId=${meta.buildId} (image: ${rollbackImage})...`
+    );
+    await deploy(artifactDir, {
+      fullImage: rollbackImage,
+      skipImageReuse: true,
     });
   }
 

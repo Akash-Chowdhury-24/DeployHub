@@ -41,6 +41,55 @@ export function resolveImageTag(env = process.env, options = {}) {
 }
 
 /**
+ * Same repository naming as resolveDockerImageRef, with an explicit tag.
+ * Ignores DOCKER_IMAGE_TAG / git / CI — used when restoring a known buildId.
+ *
+ * @param {import('../core/config.js').DeployHubConfig} config
+ * @param {Record<string, string|undefined>} [env]
+ * @param {string} imageTag
+ * @returns {{
+ *   imageName: string,
+ *   imageTag: string,
+ *   fullImage: string,
+ *   latestImage: string,
+ *   legacyLatestImage: string,
+ *   tagSource: ImageTagSource,
+ * }}
+ */
+export function resolveDockerImageRefForTag(config, env = process.env, imageTag) {
+  const imageName = env.DOCKER_IMAGE_NAME || config.project;
+  const registryUrl = env.DOCKER_REGISTRY_URL || '';
+
+  const repository =
+    registryUrl && !imageName.includes('/')
+      ? `${registryUrl.replace(/\/$/, '')}/${imageName}`
+      : imageName;
+
+  return {
+    imageName,
+    imageTag,
+    fullImage: `${repository}:${imageTag}`,
+    latestImage: `${repository}:latest`,
+    legacyLatestImage: `${config.project}:latest`,
+    tagSource: 'buildId',
+  };
+}
+
+/**
+ * Replace the tag portion of a docker image ref (handles registry:port/name:tag).
+ * @param {string} imageRef
+ * @param {string} newTag
+ */
+export function replaceDockerImageTag(imageRef, newTag) {
+  const lastSlash = imageRef.lastIndexOf('/');
+  const lastColon = imageRef.lastIndexOf(':');
+  if (lastColon > lastSlash) {
+    return `${imageRef.slice(0, lastColon)}:${newTag}`;
+  }
+  return `${imageRef}:${newTag}`;
+}
+
+/**
  * @param {import('../core/config.js').DeployHubConfig} config
  * @param {Record<string, string|undefined>} [env]
  * @param {{
@@ -57,24 +106,12 @@ export function resolveImageTag(env = process.env, options = {}) {
  * }}
  */
 export function resolveDockerImageRef(config, env = process.env, options = {}) {
-  const imageName = env.DOCKER_IMAGE_NAME || config.project;
   const { imageTag, tagSource } = resolveImageTag(env, {
     ...options,
     buildId: /** @type {{ buildId?: string }} */ (config).buildId,
   });
-  const registryUrl = env.DOCKER_REGISTRY_URL || '';
-
-  const repository =
-    registryUrl && !imageName.includes('/')
-      ? `${registryUrl.replace(/\/$/, '')}/${imageName}`
-      : imageName;
-
   return {
-    imageName,
-    imageTag,
-    fullImage: `${repository}:${imageTag}`,
-    latestImage: `${repository}:latest`,
-    legacyLatestImage: `${config.project}:latest`,
+    ...resolveDockerImageRefForTag(config, env, imageTag),
     tagSource,
   };
 }
@@ -217,6 +254,8 @@ export function describeInterpretedBackendGap(framework) {
 
 export default {
   resolveDockerImageRef,
+  resolveDockerImageRefForTag,
+  replaceDockerImageTag,
   resolveImageTag,
   highResImageTagFallback,
   EXPLICIT_IMAGE_TAG_WARNING,

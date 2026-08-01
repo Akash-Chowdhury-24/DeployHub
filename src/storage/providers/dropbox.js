@@ -1,6 +1,7 @@
 import { Dropbox } from 'dropbox';
 import fs from 'fs-extra';
 import path from 'path';
+import { isNotFoundStorageError } from '../storage-errors.js';
 
 export function createDropboxProvider(env = process.env) {
   const token = env.DROPBOX_ACCESS_TOKEN;
@@ -24,13 +25,18 @@ export function createDropboxProvider(env = process.env) {
     await fs.writeFile(localPath, fileBlob);
   }
 
+  /**
+   * @param {string} remoteKey
+   * @returns {Promise<boolean>}
+   */
   async function verify(remoteKey) {
     const key = remoteKey.startsWith('/') ? remoteKey : `/${remoteKey}`;
     try {
       await dbx.filesGetMetadata({ path: key });
       return true;
-    } catch {
-      return false;
+    } catch (err) {
+      if (isNotFoundStorageError(err)) return false;
+      throw err;
     }
   }
 

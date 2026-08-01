@@ -71,13 +71,14 @@ export async function deployToAll(config, artifactDir, envNames) {
  * @param {import('../core/config.js').DeployHubConfig} config
  * @param {string} artifactDir
  * @param {string[]} [envNames]
+ * @param {{ buildId?: string, semver?: string, remoteKey?: string }} [meta]
  */
-export async function rollbackAll(config, artifactDir, envNames) {
+export async function rollbackAll(config, artifactDir, envNames, meta) {
   const targets = envNames || config.deploy || [];
   for (const envName of targets) {
     const envConfig = config.environments[envName];
     const provider = getDeploymentProvider(envConfig.type, config, envName);
-    await provider.rollback(artifactDir);
+    await provider.rollback(artifactDir, meta);
   }
 }
 

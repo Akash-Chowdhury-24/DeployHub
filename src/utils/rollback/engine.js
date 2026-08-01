@@ -13,8 +13,9 @@ import path from 'path';
  * @param {import('../../core/config.js').DeployHubConfig} config
  * @param {string} artifactDir
  * @param {string} envName
+ * @param {{ buildId: string, semver: string, remoteKey: string }} meta
  */
-async function rollbackTarget(config, artifactDir, envName) {
+async function rollbackTarget(config, artifactDir, envName, meta) {
   const envConfig = config.environments[envName];
   if (!envConfig) {
     throw new Error(`Environment "${envName}" not found in config`);
@@ -24,7 +25,7 @@ async function rollbackTarget(config, artifactDir, envName) {
   log.info(`Rolling back ${envName} (${envConfig.type || 'server'})...`);
 
   const provider = getDeploymentProvider(envConfig.type, config, envName);
-  await provider.rollback(artifactDir);
+  await provider.rollback(artifactDir, meta);
 }
 
 /**
@@ -39,7 +40,7 @@ export async function rollbackToVersion(config, versionOrBuildId, cwd = process.
     throw new Error('No storage providers configured — cannot download artifact for rollback');
   }
 
-  const history = await loadArtifactHistory(providers, config.project);
+  const { entries: history } = await loadArtifactHistory(providers, config.project);
   const resolved = resolveRollbackTarget(history, versionOrBuildId);
 
   if (!resolved.ok) {
@@ -62,15 +63,10 @@ export async function rollbackToVersion(config, versionOrBuildId, cwd = process.
   const zipPath = path.join(artifactDir, 'artifact.zip');
   await downloadArtifactEntry(providers, config, entry, zipPath);
 
+  // Extract into artifactDir itself so layout matches a normal build artifact:
+  // top-level contents (k8s/, dist/, metadata.json, …) alongside artifact.zip.
   log.info('Extracting artifact for rollback...');
-  const extractedDir = path.join(artifactDir, '_extracted');
-  await fs.emptyDir(extractedDir);
-  await extractArtifact(artifactDir, extractedDir);
-
-  const extractedDeployment = path.join(extractedDir, 'deployment.json');
-  if (await fs.pathExists(extractedDeployment)) {
-    await fs.copy(extractedDeployment, path.join(artifactDir, 'deployment.json'));
-  }
+  await extractArtifact(artifactDir, artifactDir);
 
   const targets = config.deploy || [];
   if (targets.length === 0) {
@@ -78,9 +74,15 @@ export async function rollbackToVersion(config, versionOrBuildId, cwd = process.
     return { artifactDir, entry };
   }
 
+  const meta = {
+    buildId: entry.buildId,
+    semver: entry.semver,
+    remoteKey: entry.remoteKey,
+  };
+
   log.info('Redeploying previous artifact to server targets...');
   for (const envName of targets) {
-    await rollbackTarget(config, artifactDir, envName);
+    await rollbackTarget(config, artifactDir, envName, meta);
   }
 
   log.success(`Rollback to buildId=${entry.buildId} complete`);

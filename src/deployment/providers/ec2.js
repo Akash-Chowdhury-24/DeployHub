@@ -20,7 +20,8 @@ export function createEc2Provider(config, envName, env = process.env) {
 
     if (!instanceId) {
       throw new Error(
-        'EC2 host unknown. Set SSH_HOST to your instance public IP, or set EC2_INSTANCE_ID with AWS credentials for auto lookup.'
+        'Could not resolve host via EC2 instance lookup, and no SSH_HOST was set — ' +
+          'provide SSH_HOST (instance public IP/DNS) or set EC2_INSTANCE_ID with AWS credentials for auto lookup.'
       );
     }
 
@@ -58,34 +59,54 @@ export function createEc2Provider(config, envName, env = process.env) {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       throw new Error(
-        `Could not resolve public IP for ${instanceId} — ${msg}. Set SSH_HOST manually or install/configure AWS CLI with ec2:DescribeInstances access.`
+        `Could not resolve host via EC2 instance lookup (${instanceId}): ${msg}. ` +
+          'Set SSH_HOST to the instance public IP/DNS, or fix AWS CLI credentials / ec2:DescribeInstances access.'
       );
     }
   }
 
-  const sshProvider = createSshProvider(config, envName, env);
-
-  async function connect() {
+  /**
+   * Resolve host (skipping cloud lookup when SSH_HOST/environment.host is set),
+   * then create an SSH provider that closes over the resolved host.
+   */
+  async function getSshProvider() {
     const host = await resolveHost();
+    if (!host) {
+      throw new Error(
+        'Could not resolve host via EC2 instance lookup, and no SSH_HOST was set — provide one or the other.'
+      );
+    }
     const environment = config.environments[envName];
-    if (environment && !environment.host) {
+    if (environment) {
       environment.host = host;
     }
-    if (!env.SSH_HOST) {
-      env.SSH_HOST = host;
-    }
-    return sshProvider.connect();
+    return createSshProvider(config, envName, { ...env, SSH_HOST: host });
   }
 
   return {
-    ...sshProvider,
-    connect,
-    deploy: sshProvider.deploy.bind(sshProvider),
-    rollback: sshProvider.rollback.bind(sshProvider),
-    healthCheck: sshProvider.healthCheck.bind(sshProvider),
-    testConnection: async () => {
-      const ssh = await connect();
-      ssh.dispose();
+    async connect() {
+      const ssh = await getSshProvider();
+      return ssh.connect();
+    },
+    async deploy(artifactDir, options) {
+      const ssh = await getSshProvider();
+      return ssh.deploy(artifactDir, options);
+    },
+    async rollback(artifactDir, meta) {
+      const ssh = await getSshProvider();
+      return ssh.rollback(artifactDir, meta);
+    },
+    async healthCheck() {
+      const ssh = await getSshProvider();
+      return ssh.healthCheck();
+    },
+    async testConnection() {
+      const ssh = await getSshProvider();
+      return ssh.testConnection();
+    },
+    async runRemoteCheck(command) {
+      const ssh = await getSshProvider();
+      return ssh.runRemoteCheck(command);
     },
   };
 }

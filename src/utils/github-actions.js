@@ -259,19 +259,23 @@ function applyKubernetesWorkflowEnv(deployEnvironments, environments, envVars) {
   envVars.add('KUBECONFIG: ${{ github.workspace }}/.kube/config');
 }
 
+export const DEPLOY_WORKFLOW_FILENAME = 'deployhub.yml';
+export const ROLLBACK_WORKFLOW_FILENAME = 'deployhub-rollback.yml';
+
 /**
+ * Shared env entries for deploy and rollback workflows (same secret resolution).
+ * Uses getDeploymentWorkflowSecretKeys(env.type) — no separate rollback list.
+ *
  * @param {string[]} storageProviders
  * @param {string[]} deployEnvironments
  * @param {Record<string, { type: string }>} environments
- * @param {string} [cliSource]
  * @param {import('../core/config.js').DeployHubConfig} [config]
- * @returns {string}
+ * @returns {Set<string>}
  */
-export function generateWorkflowYaml(
+export function buildWorkflowEnvEntries(
   storageProviders,
   deployEnvironments,
   environments,
-  cliSource = DEFAULT_NPM_CLI_SOURCE,
   config = null
 ) {
   /** @type {Set<string>} */
@@ -295,10 +299,65 @@ export function generateWorkflowYaml(
   }
 
   applyKubernetesWorkflowEnv(deployEnvironments, environments, envVars);
+  return envVars;
+}
 
-  const envBlock = Array.from(envVars)
-    .map((line) => `          ${line}`)
+/**
+ * @param {Set<string>} envVars
+ * @param {string} [indent]
+ */
+function formatWorkflowEnvBlock(envVars, indent = '          ') {
+  return Array.from(envVars)
+    .map((line) => `${indent}${line}`)
     .join('\n');
+}
+
+/**
+ * Shell command to run deployhub rollback from the installed scoped package.
+ * @returns {string}
+ */
+export function getCliRollbackCommand() {
+  return `node ./node_modules/${NPM_PACKAGE}/src/cli/index.js rollback`;
+}
+
+/**
+ * Collect secret names referenced as ${{ secrets.NAME }} in workflow YAML.
+ * @param {string} yaml
+ * @returns {string[]}
+ */
+export function extractWorkflowSecretKeys(yaml) {
+  /** @type {Set<string>} */
+  const keys = new Set();
+  const re = /\$\{\{\s*secrets\.([A-Z0-9_]+)\s*\}\}/g;
+  let match;
+  while ((match = re.exec(yaml)) !== null) {
+    keys.add(match[1]);
+  }
+  return [...keys].sort();
+}
+
+/**
+ * @param {string[]} storageProviders
+ * @param {string[]} deployEnvironments
+ * @param {Record<string, { type: string }>} environments
+ * @param {string} [cliSource]
+ * @param {import('../core/config.js').DeployHubConfig} [config]
+ * @returns {string}
+ */
+export function generateWorkflowYaml(
+  storageProviders,
+  deployEnvironments,
+  environments,
+  cliSource = DEFAULT_NPM_CLI_SOURCE,
+  config = null
+) {
+  const envVars = buildWorkflowEnvEntries(
+    storageProviders,
+    deployEnvironments,
+    environments,
+    config
+  );
+  const envBlock = formatWorkflowEnvBlock(envVars);
 
   const installSpec = getCliInstallSpec(cliSource);
   const backendSteps = getBackendSetupSteps(config);
@@ -341,6 +400,71 @@ ${envBlock}
 }
 
 /**
+ * Manual rollback via Actions tab / gh workflow run (workflow_dispatch only).
+ *
+ * @param {string[]} storageProviders
+ * @param {string[]} deployEnvironments
+ * @param {Record<string, { type: string }>} environments
+ * @param {string} [cliSource]
+ * @param {import('../core/config.js').DeployHubConfig} [config]
+ * @returns {string}
+ */
+export function generateRollbackWorkflowYaml(
+  storageProviders,
+  deployEnvironments,
+  environments,
+  cliSource = DEFAULT_NPM_CLI_SOURCE,
+  config = null
+) {
+  const envVars = buildWorkflowEnvEntries(
+    storageProviders,
+    deployEnvironments,
+    environments,
+    config
+  );
+  const envBlock = formatWorkflowEnvBlock(envVars);
+
+  const installSpec = getCliInstallSpec(cliSource);
+  const githubGitConfigStep = isGithubCliSource(cliSource)
+    ? `${getGithubGitConfigStep()}\n`
+    : '';
+  const kubernetesSteps = hasKubernetesDeploy(deployEnvironments, environments)
+    ? `${getKubernetesSetupSteps()}\n`
+    : '';
+
+  const rollbackCmd = getCliRollbackCommand();
+
+  return `${getWorkflowHeaderComment()}name: DeployHub Rollback
+on:
+  workflow_dispatch:
+    inputs:
+      buildId:
+        description: 'Exact buildId to restore (leave blank = previous build)'
+        required: false
+        type: string
+jobs:
+  rollback:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+${kubernetesSteps}${githubGitConfigStep}      - name: Install DeployHub CLI
+        run: npm install ${installSpec} --no-save
+      - name: Rollback
+        env:
+${envBlock}
+        run: |
+          if [ -n "\${{ inputs.buildId }}" ]; then
+            ${rollbackCmd} "\${{ inputs.buildId }}"
+          else
+            ${rollbackCmd}
+          fi
+`;
+}
+
+/**
  * @param {import('../core/config.js').DeployHubConfig} [config]
  * @returns {string}
  */
@@ -373,6 +497,8 @@ function getInstallDepsCommand(config) {
 }
 
 /**
+ * Write deployhub.yml and deployhub-rollback.yml from the same secret/env helpers.
+ *
  * @param {string[]} storageProviders
  * @param {string[]} deployEnvironments
  * @param {Record<string, { type: string }>} environments
@@ -390,14 +516,55 @@ export async function writeWorkflowFile(
 ) {
   const workflowDir = path.join(cwd, '.github', 'workflows');
   await fs.ensureDir(workflowDir);
-  const content = generateWorkflowYaml(
+
+  const deployContent = generateWorkflowYaml(
     storageProviders,
     deployEnvironments,
     environments,
     cliSource,
     config
   );
-  await fs.writeFile(path.join(workflowDir, 'deployhub.yml'), content);
+  const rollbackContent = generateRollbackWorkflowYaml(
+    storageProviders,
+    deployEnvironments,
+    environments,
+    cliSource,
+    config
+  );
+
+  await fs.writeFile(path.join(workflowDir, DEPLOY_WORKFLOW_FILENAME), deployContent);
+  await fs.writeFile(path.join(workflowDir, ROLLBACK_WORKFLOW_FILENAME), rollbackContent);
+}
+
+/**
+ * Doctor helper: informational status for the rollback workflow file.
+ * Returns null when the check does not apply (no storage/deploy configured).
+ *
+ * @param {string} cwd
+ * @param {{ storage?: string[], deploy?: string[] }} config
+ * @returns {Promise<null | { name: string, pass: boolean, message: string }>}
+ */
+export async function getRollbackWorkflowDoctorCheck(cwd, config) {
+  const hasStorage = (config.storage || []).length > 0;
+  const hasDeploy = (config.deploy || []).length > 0;
+  if (!hasStorage || !hasDeploy) return null;
+
+  const rollbackPath = path.join(cwd, '.github', 'workflows', ROLLBACK_WORKFLOW_FILENAME);
+  if (await fs.pathExists(rollbackPath)) {
+    return {
+      name: 'Rollback workflow',
+      pass: true,
+      message: `Workflow file exists at .github/workflows/${ROLLBACK_WORKFLOW_FILENAME}`,
+    };
+  }
+
+  return {
+    name: 'Rollback workflow',
+    pass: true,
+    message:
+      `Missing .github/workflows/${ROLLBACK_WORKFLOW_FILENAME} — ` +
+      'run deployhub sync-workflows to add CI rollback (workflow_dispatch)',
+  };
 }
 
 /**

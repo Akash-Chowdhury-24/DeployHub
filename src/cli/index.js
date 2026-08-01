@@ -13,6 +13,7 @@ import { registerDoctorCommand } from '../commands/doctor.js';
 import { registerVerifyCommand } from '../commands/verify.js';
 import { registerCleanCommand } from '../commands/clean.js';
 import { registerUpdateCommand } from '../commands/update.js';
+import { registerSyncWorkflowsCommand } from '../commands/sync-workflows.js';
 import { formatVersionOutput, printBanner, shouldShowBanner } from '../utils/author.js';
 
 loadEnv();
@@ -41,5 +42,6 @@ registerDoctorCommand(program);
 registerVerifyCommand(program);
 registerCleanCommand(program);
 registerUpdateCommand(program);
+registerSyncWorkflowsCommand(program);
 
 program.parse();

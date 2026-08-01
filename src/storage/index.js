@@ -20,6 +20,7 @@ import {
   parseArtifactHistory,
   prependHistoryEntry,
 } from '../utils/artifact-history.js';
+import { summarizeStorageError } from './storage-errors.js';
 
 /** @type {Record<string, (env?: Record<string, string>) => ReturnType<typeof createAwsProvider>>} */
 const PROVIDER_FACTORIES = {
@@ -59,28 +60,51 @@ function ensureBuildIdentity(config) {
 
 /**
  * Read history.json from the first provider that has it.
+ * Missing keys across all providers → { entries: [], source: null }.
+ * Auth / network / permission failures → thrown with a concise actionable message
+ * (not silently treated as "no history").
+ *
  * @param {string[]} providers
  * @param {string} project
- * @returns {Promise<import('../utils/artifact-history.js').ArtifactHistoryEntry[]>}
+ * @returns {Promise<{
+ *   entries: import('../utils/artifact-history.js').ArtifactHistoryEntry[],
+ *   source: string|null,
+ * }>}
  */
 export async function loadArtifactHistory(providers, project) {
+  if (!providers || providers.length === 0) {
+    return { entries: [], source: null };
+  }
+
   const key = historyRemoteKey(project);
   const tmp = path.join(os.tmpdir(), `deployhub-history-${Date.now()}.json`);
+
   try {
     for (const name of providers) {
-      const provider = getStorageProvider(name);
-      const exists = await provider.verify(key);
-      if (!exists) continue;
-      await provider.download(key, tmp);
-      const raw = await fs.readFile(tmp, 'utf8');
-      return parseArtifactHistory(raw);
+      try {
+        const provider = getStorageProvider(name);
+        const exists = await provider.verify(key);
+        if (!exists) continue;
+
+        await provider.download(key, tmp);
+        const raw = await fs.readFile(tmp, 'utf8');
+        return {
+          entries: parseArtifactHistory(raw),
+          source: name,
+        };
+      } catch (err) {
+        const reason = summarizeStorageError(err);
+        throw new Error(
+          `Could not check remote history via ${name}: ${reason} — ` +
+            'verify your storage credentials and configuration are correct.'
+        );
+      }
     }
-  } catch {
-    return [];
   } finally {
     await fs.remove(tmp).catch(() => {});
   }
-  return [];
+
+  return { entries: [], source: null };
 }
 
 /**

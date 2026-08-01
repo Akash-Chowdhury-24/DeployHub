@@ -1,6 +1,7 @@
 import { execa } from 'execa';
 import { createLogger } from '../../logger/index.js';
 import { createDockerImageDeployContext } from '../../utils/docker-image-deploy.js';
+import { resolveDockerImageRefForTag } from '../../utils/docker-image.js';
 
 /**
  * @param {import('../../core/config.js').DeployHubConfig} config
@@ -14,12 +15,17 @@ export function createDockerProvider(config, envName, env = process.env) {
 
   /**
    * @param {string} artifactDir
+   * @param {{ fullImage?: string, skipImageReuse?: boolean }} [options]
    */
-  async function deploy(artifactDir) {
-    log.info(`Deploying via Docker (image: ${fullImage})...`);
+  async function deploy(artifactDir, options = {}) {
+    const imageRef = options.fullImage || fullImage;
+    log.info(`Deploying via Docker (image: ${imageRef})...`);
     const dockerEnv = getDockerEnv();
 
-    const result = await ensureImageReadyForDeploy(artifactDir);
+    const result = await ensureImageReadyForDeploy(artifactDir, {
+      fullImage: options.fullImage,
+      skipImageReuse: options.skipImageReuse,
+    });
     if (result.ranCompose) {
       log.success('Docker deployment complete');
       return;
@@ -31,7 +37,7 @@ export function createDockerProvider(config, envName, env = process.env) {
       { stdio: 'pipe', env: dockerEnv }
     ).catch(() => {});
 
-    await execa('docker', ['run', '-d', '--rm', '--name', config.project, fullImage], {
+    await execa('docker', ['run', '-d', '--rm', '--name', config.project, imageRef], {
       stdio: 'inherit',
       env: dockerEnv,
     });
@@ -39,9 +45,25 @@ export function createDockerProvider(config, envName, env = process.env) {
     log.success('Docker deployment complete');
   }
 
-  async function rollback(artifactDir) {
-    log.info('Rolling back Docker deployment (redeploy previous artifact)...');
-    await deploy(artifactDir);
+  /**
+   * @param {string} artifactDir
+   * @param {{ buildId?: string, semver?: string, remoteKey?: string }} [meta]
+   */
+  async function rollback(artifactDir, meta = {}) {
+    if (!meta.buildId) {
+      throw new Error(
+        'Docker rollback requires buildId from the restored artifact history entry'
+      );
+    }
+
+    const rollbackImage = resolveDockerImageRefForTag(config, env, meta.buildId).fullImage;
+    log.info(
+      `Rolling back Docker to buildId=${meta.buildId} (image: ${rollbackImage})...`
+    );
+    await deploy(artifactDir, {
+      fullImage: rollbackImage,
+      skipImageReuse: true,
+    });
   }
 
   async function healthCheck() {

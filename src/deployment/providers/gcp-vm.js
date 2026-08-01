@@ -21,7 +21,8 @@ export function createGcpVmProvider(config, envName, env = process.env) {
 
     if (!projectId || !zone || !instanceName) {
       throw new Error(
-        'GCP VM host unknown. Set SSH_HOST to your instance external IP, or set GCP_PROJECT_ID, GCP_ZONE, and GCP_INSTANCE_NAME for auto lookup.'
+        'Could not resolve host via GCP instance lookup, and no SSH_HOST was set — ' +
+          'provide SSH_HOST (instance external IP/DNS) or set GCP_PROJECT_ID, GCP_ZONE, and GCP_INSTANCE_NAME for auto lookup.'
       );
     }
 
@@ -59,34 +60,54 @@ export function createGcpVmProvider(config, envName, env = process.env) {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       throw new Error(
-        `Could not resolve external IP for ${instanceName} — ${msg}. Set SSH_HOST manually or run gcloud auth login and verify project/zone/instance name.`
+        `Could not resolve host via GCP instance lookup (${instanceName}): ${msg}. ` +
+          'Set SSH_HOST to the instance external IP/DNS, or run gcloud auth login and verify project/zone/instance name.'
       );
     }
   }
 
-  const sshProvider = createSshProvider(config, envName, env);
-
-  async function connect() {
+  /**
+   * Resolve host (skipping cloud lookup when SSH_HOST/environment.host is set),
+   * then create an SSH provider that closes over the resolved host.
+   */
+  async function getSshProvider() {
     const host = await resolveHost();
+    if (!host) {
+      throw new Error(
+        'Could not resolve host via GCP instance lookup, and no SSH_HOST was set — provide one or the other.'
+      );
+    }
     const environment = config.environments[envName];
-    if (environment && !environment.host) {
+    if (environment) {
       environment.host = host;
     }
-    if (!env.SSH_HOST) {
-      env.SSH_HOST = host;
-    }
-    return sshProvider.connect();
+    return createSshProvider(config, envName, { ...env, SSH_HOST: host });
   }
 
   return {
-    ...sshProvider,
-    connect,
-    deploy: sshProvider.deploy.bind(sshProvider),
-    rollback: sshProvider.rollback.bind(sshProvider),
-    healthCheck: sshProvider.healthCheck.bind(sshProvider),
-    testConnection: async () => {
-      const ssh = await connect();
-      ssh.dispose();
+    async connect() {
+      const ssh = await getSshProvider();
+      return ssh.connect();
+    },
+    async deploy(artifactDir, options) {
+      const ssh = await getSshProvider();
+      return ssh.deploy(artifactDir, options);
+    },
+    async rollback(artifactDir, meta) {
+      const ssh = await getSshProvider();
+      return ssh.rollback(artifactDir, meta);
+    },
+    async healthCheck() {
+      const ssh = await getSshProvider();
+      return ssh.healthCheck();
+    },
+    async testConnection() {
+      const ssh = await getSshProvider();
+      return ssh.testConnection();
+    },
+    async runRemoteCheck(command) {
+      const ssh = await getSshProvider();
+      return ssh.runRemoteCheck(command);
     },
   };
 }

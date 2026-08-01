@@ -1,6 +1,7 @@
 import { Client } from 'basic-ftp';
 import fs from 'fs-extra';
 import path from 'path';
+import { isNotFoundStorageError } from '../storage-errors.js';
 
 export function createFtpProvider(env = process.env) {
   const host = env.FTP_HOST;
@@ -38,6 +39,10 @@ export function createFtpProvider(env = process.env) {
     });
   }
 
+  /**
+   * @param {string} remoteKey
+   * @returns {Promise<boolean>}
+   */
   async function verify(remoteKey) {
     const remotePath = `${basePath}/${remoteKey}`;
     try {
@@ -45,8 +50,9 @@ export function createFtpProvider(env = process.env) {
         await client.size(remotePath);
       });
       return true;
-    } catch {
-      return false;
+    } catch (err) {
+      if (isNotFoundStorageError(err)) return false;
+      throw err;
     }
   }
 

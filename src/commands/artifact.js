@@ -55,10 +55,21 @@ export function registerArtifactCommand(program) {
       if (opts.remote) {
         console.log(chalk.bold('\nRemote history (storage):\n'));
         try {
-          const history = await loadArtifactHistory(config.storage || [], config.project);
+          const { entries: history, source } = await loadArtifactHistory(
+            config.storage || [],
+            config.project
+          );
           if (history.length === 0) {
-            console.log(chalk.yellow('  (no history.json found)'));
+            console.log(
+              chalk.yellow(
+                '  No artifact history found for this project — you may not have deployed any builds yet.'
+              )
+            );
           } else {
+            if (source) {
+              console.log(chalk.gray(`  Source: ${source}`));
+              console.log('');
+            }
             for (const e of history) {
               console.log(
                 `  ${chalk.cyan(e.buildId)}  semver=${e.semver}  ${e.uploadedAt || ''}`
@@ -67,11 +78,8 @@ export function registerArtifactCommand(program) {
             }
           }
         } catch (err) {
-          console.log(
-            chalk.yellow(
-              `  Could not load remote history: ${err instanceof Error ? err.message : String(err)}`
-            )
-          );
+          const detail = err instanceof Error ? err.message : String(err);
+          console.log(chalk.red(`  ${detail}`));
         }
       }
 
@@ -101,8 +109,8 @@ export function registerArtifactCommand(program) {
 
       const history = await loadArtifactHistory(config.storage || [], config.project);
       const histMatch =
-        history.find((e) => e.buildId === needle || e.buildId === versionOrBuildId) ||
-        history.find((e) => e.semver === needle);
+        history.entries.find((e) => e.buildId === needle || e.buildId === versionOrBuildId) ||
+        history.entries.find((e) => e.semver === needle);
 
       const restoreDir = path.join(cwd, '.deployhub-restore', `v${needle}`);
       await fs.ensureDir(restoreDir);

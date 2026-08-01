@@ -10,6 +10,7 @@ import {
   generateSpringRuntimeDockerfile,
   isFrontendStaticFramework,
   isInterpretedBackendFramework,
+  replaceDockerImageTag,
   resolveDockerImageRef,
   EXPLICIT_IMAGE_TAG_WARNING,
 } from './docker-image.js';
@@ -67,8 +68,9 @@ export function createDockerImageDeployContext(config, env = process.env, log) {
   /**
    * Push only when registry credentials are configured. Avoids a noisy failed
    * push to Docker Hub for local-only image names.
+   * @param {string} [imageRef]
    */
-  async function maybePushImage() {
+  async function maybePushImage(imageRef = fullImage) {
     if (!hasRegistryCredentials()) {
       log.info(
         'docker push skipped (DOCKER_REGISTRY_USERNAME/TOKEN not set — local image only)'
@@ -76,12 +78,12 @@ export function createDockerImageDeployContext(config, env = process.env, log) {
       return;
     }
 
-    log.info(`Pushing ${fullImage} to registry...`);
-    await execa('docker', ['push', fullImage], {
+    log.info(`Pushing ${imageRef} to registry...`);
+    await execa('docker', ['push', imageRef], {
       stdio: 'inherit',
       env: getDockerEnv(),
     });
-    log.success(`Pushed ${fullImage}`);
+    log.success(`Pushed ${imageRef}`);
   }
 
   /**
@@ -102,21 +104,22 @@ export function createDockerImageDeployContext(config, env = process.env, log) {
   /**
    * Prefer the image already built during the pipeline `docker` stage.
    * Retag when the pipeline used `:latest` and deploy needs a version tag.
+   * @param {string} [imageRef]
    */
-  async function ensureImageFromPipeline() {
-    if (await imageExistsLocally(fullImage)) {
-      log.info(`Reusing existing image ${fullImage}`);
+  async function ensureImageFromPipeline(imageRef = fullImage) {
+    if (await imageExistsLocally(imageRef)) {
+      log.info(`Reusing existing image ${imageRef}`);
       return true;
     }
 
     const candidates = [...new Set([latestImage, legacyLatestImage])].filter(
-      (ref) => ref !== fullImage
+      (ref) => ref !== imageRef
     );
 
     for (const candidate of candidates) {
       if (!(await imageExistsLocally(candidate))) continue;
-      log.info(`Re-tagging pipeline image ${candidate} → ${fullImage}`);
-      await execa('docker', ['tag', candidate, fullImage], {
+      log.info(`Re-tagging pipeline image ${candidate} → ${imageRef}`);
+      await execa('docker', ['tag', candidate, imageRef], {
         stdio: 'inherit',
         env: getDockerEnv(),
       });
@@ -211,12 +214,13 @@ export function createDockerImageDeployContext(config, env = process.env, log) {
 
   /**
    * @param {string} artifactDir
+   * @param {string} [imageRef]
    */
-  async function buildFromArtifactContents(artifactDir) {
+  async function buildFromArtifactContents(artifactDir, imageRef = fullImage) {
     const zipPath = path.join(artifactDir, 'artifact.zip');
     if (!(await fs.pathExists(zipPath))) {
       throw new Error(
-        `No local image found for ${fullImage} and no artifact.zip to build from. ` +
+        `No local image found for ${imageRef} and no artifact.zip to build from. ` +
           'Enable pipeline.docker so the image is built from project source, or run deployhub build first.'
       );
     }
@@ -281,7 +285,7 @@ export function createDockerImageDeployContext(config, env = process.env, log) {
         await prepareBackendBuildContext(buildContext, metadata, framework, port);
       }
 
-      await execa('docker', ['build', '-t', fullImage, '.'], {
+      await execa('docker', ['build', '-t', imageRef, '.'], {
         cwd: buildContext,
         stdio: 'inherit',
         env: getDockerEnv(),
@@ -295,36 +299,55 @@ export function createDockerImageDeployContext(config, env = process.env, log) {
   /**
    * Ensure a deployable image exists locally, then push when credentials are set.
    * @param {string} artifactDir
-   * @param {{ skipPush?: boolean }} [options]
+   * @param {{
+   *   skipPush?: boolean,
+   *   fullImage?: string,
+   *   skipImageReuse?: boolean,
+   * }} [options]
    */
   async function ensureImageReadyForDeploy(artifactDir, options = {}) {
+    const imageRef = options.fullImage || fullImage;
+    const latestRef = options.fullImage
+      ? replaceDockerImageTag(options.fullImage, 'latest')
+      : latestImage;
+    const lastSlash = imageRef.lastIndexOf('/');
+    const lastColon = imageRef.lastIndexOf(':');
+    const effectiveTag =
+      lastColon > lastSlash ? imageRef.slice(lastColon + 1) : 'latest';
+
     await dockerLogin();
 
-    const reused = await ensureImageFromPipeline();
+    let reused = false;
+    if (!options.skipImageReuse) {
+      reused = await ensureImageFromPipeline(imageRef);
+    } else {
+      log.info(`Skipping local image reuse — rebuilding ${imageRef} from artifact`);
+    }
+
     let ranCompose = false;
 
     if (!reused) {
-      const result = await buildFromArtifactContents(artifactDir);
+      const result = await buildFromArtifactContents(artifactDir, imageRef);
       ranCompose = Boolean(result?.ranCompose);
     }
 
     if (ranCompose) {
-      return { ranCompose: true };
+      return { ranCompose: true, fullImage: imageRef };
     }
 
     if (!options.skipPush) {
-      await maybePushImage();
+      await maybePushImage(imageRef);
     }
 
     const dockerEnv = getDockerEnv();
-    if (imageTag !== 'latest' && fullImage !== latestImage) {
-      await execa('docker', ['tag', fullImage, latestImage], {
+    if (effectiveTag !== 'latest' && imageRef !== latestRef) {
+      await execa('docker', ['tag', imageRef, latestRef], {
         stdio: 'pipe',
         env: dockerEnv,
       }).catch(() => {});
     }
 
-    return { ranCompose: false };
+    return { ranCompose: false, fullImage: imageRef };
   }
 
   return {
