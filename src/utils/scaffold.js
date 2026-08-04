@@ -10,7 +10,7 @@ import {
 import {
   generateKubernetesManifests,
   hasKubernetesManifests,
-  resolveKubernetesManifestOptions,
+  resolveKubernetesManifestOptionsFromCwd,
 } from './kubernetes-manifests.js';
 
 /**
@@ -134,7 +134,11 @@ export async function ensureKubernetesManifests(
     return { generated: false };
   }
 
-  const manifestOptions = resolveKubernetesManifestOptions(config, environments);
+  const manifestOptions = await resolveKubernetesManifestOptionsFromCwd(
+    cwd,
+    config,
+    environments
+  );
   const { deploymentYaml, serviceYaml } = generateKubernetesManifests(manifestOptions);
 
   const k8sDir = path.join(cwd, 'k8s');

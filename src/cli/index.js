@@ -14,6 +14,7 @@ import { registerVerifyCommand } from '../commands/verify.js';
 import { registerCleanCommand } from '../commands/clean.js';
 import { registerUpdateCommand } from '../commands/update.js';
 import { registerSyncWorkflowsCommand } from '../commands/sync-workflows.js';
+import { registerSyncK8sPortsCommand } from '../commands/sync-k8s-ports.js';
 import { formatVersionOutput, printBanner, shouldShowBanner } from '../utils/author.js';
 
 loadEnv();
@@ -43,5 +44,6 @@ registerVerifyCommand(program);
 registerCleanCommand(program);
 registerUpdateCommand(program);
 registerSyncWorkflowsCommand(program);
+registerSyncK8sPortsCommand(program);
 
 program.parse();

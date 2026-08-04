@@ -1,5 +1,6 @@
 import fs from 'fs-extra';
 import path from 'path';
+import { resolveContainerPort } from './dockerfile-expose.js';
 
 /**
  * @param {string} name
@@ -65,6 +66,11 @@ export function generateKubernetesManifests({
     ? `      imagePullSecrets:\n      - name: ${imagePullSecret}\n`
     : '';
 
+  // Service port stays 80 (Ingress-friendly cluster-facing port).
+  // containerPort / targetPort must match the container's listening port (EXPOSE).
+  const servicePort = 80;
+  const targetPort = port;
+
   const deploymentYaml = `apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -96,9 +102,6 @@ ${pullSecretBlock}      containers:
             cpu: "500m"
 `;
 
-  const servicePort = port === 80 ? 80 : 80;
-  const targetPort = port;
-
   const serviceYaml = `apiVersion: v1
 kind: Service
 metadata:
@@ -117,11 +120,28 @@ spec:
 }
 
 /**
+ * Surgically update only containerPort / targetPort in manifest YAML.
+ * Does not change Service `port:`, replicas, resources, env, probes, etc.
+ *
+ * @param {string} yaml
+ * @param {number} port
+ * @returns {{ content: string, changed: boolean }}
+ */
+export function patchKubernetesManifestPorts(yaml, port) {
+  const next = String(yaml)
+    .replace(/^([ \t]*-?[ \t]*containerPort:[ \t]*)\d+[ \t]*$/gm, `$1${port}`)
+    .replace(/^([ \t]*targetPort:[ \t]*)\d+[ \t]*$/gm, `$1${port}`);
+
+  return { content: next, changed: next !== yaml };
+}
+
+/**
  * @param {import('../core/config.js').DeployHubConfig} config
  * @param {Record<string, Record<string, unknown>>} [environments]
+ * @param {{ port?: number }} [options]
  * @returns {{ appName: string, imageName: string, imageTag: string, port: number, namespace: string, imagePullSecret: string }}
  */
-export function resolveKubernetesManifestOptions(config, environments = {}) {
+export function resolveKubernetesManifestOptions(config, environments = {}, options = {}) {
   const envList = Object.values(environments);
   const k8sEnv = envList.find((env) => env.type === 'kubernetes') || {};
 
@@ -142,13 +162,18 @@ export function resolveKubernetesManifestOptions(config, environments = {}) {
     process.env.KUBE_IMAGE_PULL_SECRET ||
     '';
 
-  let port = 3000;
-  if (config.projectType === 'both' && config.backend?.port) {
-    port = config.backend.port;
+  /** @type {number} */
+  let port;
+  if (typeof options.port === 'number' && Number.isFinite(options.port)) {
+    port = options.port;
+  } else if (config.projectType === 'both' && config.backend?.port) {
+    port = Number(config.backend.port);
   } else if (config.port) {
-    port = config.port;
+    port = Number(config.port);
   } else if (config.backend?.port) {
-    port = config.backend.port;
+    port = Number(config.backend.port);
+  } else {
+    port = 3000;
   }
 
   return {
@@ -161,9 +186,77 @@ export function resolveKubernetesManifestOptions(config, environments = {}) {
   };
 }
 
+/**
+ * Resolve manifest options with Dockerfile EXPOSE → config → fallback port.
+ *
+ * @param {string} cwd
+ * @param {import('../core/config.js').DeployHubConfig} config
+ * @param {Record<string, Record<string, unknown>>} [environments]
+ */
+export async function resolveKubernetesManifestOptionsFromCwd(
+  cwd,
+  config,
+  environments = {}
+) {
+  const { port, source } = await resolveContainerPort(cwd, config);
+  return {
+    ...resolveKubernetesManifestOptions(config, environments, { port }),
+    portSource: source,
+  };
+}
+
+/**
+ * Paths DeployHub normally writes for Kubernetes starter manifests.
+ * @param {string} cwd
+ * @returns {{ deploymentPath: string, servicePath: string }}
+ */
+export function getDefaultKubernetesManifestPaths(cwd) {
+  const k8sDir = path.join(cwd, 'k8s');
+  return {
+    deploymentPath: path.join(k8sDir, 'deployment.yaml'),
+    servicePath: path.join(k8sDir, 'service.yaml'),
+  };
+}
+
+/**
+ * Patch containerPort/targetPort in existing k8s/deployment.yaml + service.yaml only.
+ *
+ * @param {string} cwd
+ * @param {number} port
+ * @returns {Promise<{ patched: string[], skipped: string[], port: number }>}
+ */
+export async function syncKubernetesManifestPorts(cwd, port) {
+  const { deploymentPath, servicePath } = getDefaultKubernetesManifestPaths(cwd);
+  /** @type {string[]} */
+  const patched = [];
+  /** @type {string[]} */
+  const skipped = [];
+
+  for (const filePath of [deploymentPath, servicePath]) {
+    if (!(await fs.pathExists(filePath))) {
+      skipped.push(path.relative(cwd, filePath));
+      continue;
+    }
+    const original = await fs.readFile(filePath, 'utf8');
+    const { content, changed } = patchKubernetesManifestPorts(original, port);
+    if (changed) {
+      await fs.writeFile(filePath, content);
+      patched.push(path.relative(cwd, filePath));
+    } else {
+      skipped.push(path.relative(cwd, filePath));
+    }
+  }
+
+  return { patched, skipped, port };
+}
+
 export default {
   sanitizeK8sName,
   hasKubernetesManifests,
   generateKubernetesManifests,
+  patchKubernetesManifestPorts,
   resolveKubernetesManifestOptions,
+  resolveKubernetesManifestOptionsFromCwd,
+  getDefaultKubernetesManifestPaths,
+  syncKubernetesManifestPorts,
 };

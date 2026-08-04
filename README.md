@@ -86,7 +86,7 @@ This interactive wizard will:
 - Set up storage providers (AWS, Google Drive, Azure, GCP, Dropbox, Local)
 - Optionally configure deployment targets (SSH, Docker, EC2, Azure VM, GCP VM, Kubernetes)
 - Generate `deployhub.config.json`
-- Generate `.github/workflows/deployhub.yml`
+- Generate `.github/workflows/deployhub.yml` and `.github/workflows/deployhub-rollback.yml`
 - Generate `.env.example`
 
 ### 2. Configure credentials
@@ -182,7 +182,8 @@ The wizard asks the same core questions for every setup:
 **Generated files:**
 
 - `deployhub.config.json` — project settings (no secrets)
-- `.github/workflows/deployhub.yml` — CI pipeline
+- `.github/workflows/deployhub.yml` — CI deploy pipeline (push to main)
+- `.github/workflows/deployhub-rollback.yml` — manual CI rollback (`workflow_dispatch`)
 - `.env.example` — list of env vars you may need
 - `nginx.conf` — auto-generated if frontend deploys to SSH
 - `Dockerfile` — auto-generated if missing and you chose Docker or Kubernetes deploy (your existing `Dockerfile` is never overwritten)
@@ -231,8 +232,24 @@ deployhub artifact restore <buildId> # download a past build
 deployhub deploy                     # deploy latest artifact without rebuilding
 deployhub rollback                   # previous build from history
 deployhub rollback <buildId>         # exact build (required if semver is ambiguous)
+deployhub sync-workflows             # regenerate deploy + rollback GitHub Actions YAML
+deployhub sync-k8s-ports             # fix containerPort/targetPort in existing k8s manifests
 deployhub logs                       # last deployment logs
 ```
+
+### Rollback behavior
+
+`deployhub rollback` restores a previous artifact from storage `history.json` and redeploys it:
+
+| Argument | Behavior |
+|----------|----------|
+| *(none)* | Rolls back to the **previous** build (second entry in newest-first history) |
+| Exact `buildId` | Rolls back to that specific build |
+| Semver / version string matching **multiple** builds | Does **not** guess — prints the matching `buildId`s and exits; re-run with an exact one |
+
+`buildId` looks like `{semver}-{stamp}` where the stamp is a short git SHA when available, otherwise a CI run id, otherwise a high-resolution timestamp. When `DOCKER_IMAGE_TAG` is left unset, Docker and Kubernetes use that same `buildId` as the image tag — so you can correlate an artifact in storage with the image that was pushed.
+
+For CI-triggered rollback, see [CI rollback](#ci-rollback-deployhub-rollbackyml).
 
 ---
 
@@ -555,17 +572,27 @@ All JS frontends share the same install/build flow: `npm ci` → `npm run build`
 After `init`, commit these files:
 
 ```bash
-git add deployhub.config.json .github/workflows/deployhub.yml .env.example
+git add deployhub.config.json .github/workflows/deployhub.yml .github/workflows/deployhub-rollback.yml .env.example
 git commit -m "Add DeployHub CI"
 ```
 
 1. Open **Settings → Secrets and variables → Actions** in your GitHub repo.
 2. Add every secret listed at the end of `deployhub init` (storage + deployment).
-3. Push to `main` or `master` — the workflow triggers on push.
+3. Push to `main` or `master` — the deploy workflow triggers on push.
 
-The workflow installs the correct language runtime (Node, Python, Java, Go, .NET, Ruby) based on your `deployhub.config.json`, installs DeployHub, runs `deployhub build`, and uses your secrets.
+The deploy workflow (`deployhub.yml`) installs the correct language runtime (Node, Python, Java, Go, .NET, Ruby) based on your `deployhub.config.json`, installs DeployHub, runs `deployhub build`, and uses your secrets.
 
-To run manually: **Actions → DeployHub → Run workflow**.
+To run a deploy manually: **Actions → DeployHub → Run workflow**.
+
+### CI rollback (`deployhub-rollback.yml`)
+
+`init` also generates a separate **DeployHub Rollback** workflow (`deployhub-rollback.yml`). It is triggered only via GitHub Actions' **Run workflow** button (not on push):
+
+1. Open **Actions → DeployHub Rollback → Run workflow**.
+2. Optionally enter an exact `buildId` (leave blank to roll back to the previous build).
+3. Run the workflow.
+
+Already-initialized projects that only have `deployhub.yml` will not get the rollback workflow from a re-run of unrelated commands — run **`deployhub sync-workflows`** once to regenerate both workflow files from your current `deployhub.config.json`, then commit and push.
 
 ---
 
@@ -648,6 +675,8 @@ DeployHub detects whether the server uses Debian-style `sites-available` or RHEL
 
 ### SSH
 
+**Verification:** Real-world verified DEPLOY and ROLLBACK.
+
 **Prerequisites (before `deployhub init`):**
 - [ ] Complete **[one-time server setup](#one-time-server-setup-before-your-first-deploy)** (deploy path ownership + Nginx/sudo for frontends)
 - [ ] A Linux server with SSH enabled
@@ -687,7 +716,7 @@ DeployHub detects whether the server uses Debian-style `sites-available` or RHEL
 
 ### Docker
 
-**Verification:** Real-world verified (local and CI Docker deploys).
+**Verification:** Real-world verified DEPLOY and ROLLBACK (local and CI).
 
 **Prerequisites:**
 - [ ] Docker installed (`docker --version` works)
@@ -721,6 +750,8 @@ DeployHub detects whether the server uses Debian-style `sites-available` or RHEL
 | `DOCKER_HOST` | Remote daemon (optional) | `ssh://ubuntu@host` | Remote Docker setup |
 
 ### AWS EC2
+
+**Verification:** Real-world verified DEPLOY and ROLLBACK.
 
 **Prerequisites:**
 - [ ] Complete **[one-time server setup](#one-time-server-setup-before-your-first-deploy)** (`ec2-user` on Amazon Linux)
@@ -758,6 +789,8 @@ DeployHub detects whether the server uses Debian-style `sites-available` or RHEL
 
 ### Azure VM
 
+**Verification:** Real-world verified DEPLOY. Rollback logic confirmed via shared-SSH-path audit; not yet live-tested independently.
+
 **Prerequisites:**
 - [ ] Complete **[one-time server setup](#one-time-server-setup-before-your-first-deploy)** (`azureuser` or your VM login user)
 - [ ] Azure VM created in Portal (DeployHub does not provision it)
@@ -791,6 +824,8 @@ DeployHub detects whether the server uses Debian-style `sites-available` or RHEL
 | `AZURE_VM_NAME` | VM name | `my-vm` | Portal → Virtual machines |
 
 ### GCP VM
+
+**Verification:** Real-world verified DEPLOY. Rollback logic confirmed via shared-SSH-path audit; not yet live-tested independently.
 
 **Prerequisites:**
 - [ ] Complete **[one-time server setup](#one-time-server-setup-before-your-first-deploy)** (your GCP SSH username)
@@ -832,7 +867,7 @@ DeployHub detects whether the server uses Debian-style `sites-available` or RHEL
 
 ### Kubernetes
 
-**Verification:** Real-world verified (including k3s and CI deploys).
+**Verification:** Real-world verified DEPLOY and ROLLBACK (including k3s and CI).
 
 **Prerequisites:**
 - [ ] Existing Kubernetes cluster (DeployHub does not provision clusters)
@@ -868,7 +903,7 @@ DeployHub detects whether the server uses Debian-style `sites-available` or RHEL
 6. Add GitHub Secrets for CI (see table — **`KUBECONFIG` must be the file contents, not a path**)
 7. Run `deployhub doctor`, then `git push origin main`
 
-> **Warning — Service `targetPort`:** the default `targetPort` in generated `k8s/service.yaml` may not match your app's actual exposed port (e.g. a static nginx image serves on port **80**, not the config's default like 3000). Verify and adjust `k8s/service.yaml`'s `targetPort` (and the Deployment `containerPort` if needed) before your first deploy.
+> **Ports in generated Kubernetes manifests:** `containerPort` and `targetPort` are derived from your project's Dockerfile `EXPOSE` line (frontend / nginx images correctly get **80**; backends get their real exposed port). If no Dockerfile or usable `EXPOSE` exists yet, DeployHub falls back to a per-project-type default that matches its Dockerfile templates. Fresh `init` does **not** require a manual port edit. The Service's external `port:` stays **80** for all project types by design (Ingress-friendly); only the internal `targetPort` / `containerPort` track the container. Already-initialized projects with stale `3000` values can run `deployhub sync-k8s-ports` to patch just those fields.
 
 | Variable | Description | Example | Where to get it |
 |----------|-------------|---------|-----------------|
@@ -961,8 +996,10 @@ Run `deployhub doctor` after any config change.
 | `deployhub storage list` | List storage providers and connection status |
 | `deployhub deploy` | Deploy latest artifact |
 | `deployhub rollback [buildId\|semver]` | Previous build, or exact buildId (ambiguous semver lists matches and exits) |
+| `deployhub sync-workflows` | Regenerate `.github/workflows/deployhub.yml` and `deployhub-rollback.yml` from config |
+| `deployhub sync-k8s-ports` | Update only `containerPort` / `targetPort` in `k8s/deployment.yaml` and `k8s/service.yaml` from Dockerfile `EXPOSE` (or config/fallback). Does **not** change replicas, resources, env, or probes. Heavily customized / multi-container manifests may need a manual review |
 | `deployhub logs` | Show logs from last deployment |
-| `deployhub doctor` | Pre-flight checks |
+| `deployhub doctor` | Pre-flight checks (including an informational warning if the rollback workflow file is missing) |
 | `deployhub verify` | Health check on configured endpoint |
 | `deployhub clean` | Remove old local artifacts |
 | `deployhub update` | Check for CLI updates |
@@ -1009,6 +1046,8 @@ Add these secrets in your repository (Settings → Secrets and variables → Act
 | `DOCKER_IMAGE_NAME`, `DOCKER_REGISTRY_USERNAME`, `DOCKER_REGISTRY_TOKEN`, `DOCKER_REGISTRY_URL`, `DOCKER_HOST` | Docker deployment (`DOCKER_IMAGE_TAG` optional) |
 | `KUBECONFIG`, `KUBE_CONTEXT`, `KUBE_NAMESPACE`, `DOCKER_IMAGE_NAME`, `DOCKER_REGISTRY_USERNAME`, `DOCKER_REGISTRY_TOKEN`, `DOCKER_REGISTRY_URL`, `DOCKER_IMAGE_TAG`, `KUBE_IMAGE_PULL_SECRET` | Kubernetes — **`KUBECONFIG` in GitHub Secrets must be the kubeconfig file contents (or base64), not a filesystem path**. `DOCKER_IMAGE_TAG`, `KUBE_NAMESPACE`, `DOCKER_REGISTRY_URL`, and `KUBE_IMAGE_PULL_SECRET` are optional |
 
+**Kubernetes rollback vs deploy — registry credentials:** Kubernetes **rollback** specifically **requires** `DOCKER_REGISTRY_USERNAME` and `DOCKER_REGISTRY_TOKEN`. Rollback rebuilds and must push a fresh image tagged with the restored `buildId`; without registry credentials it fails loudly and early (a rollback that cannot push can never succeed against a real cluster). This is stricter than a normal Kubernetes **deploy**, which may still allow local-only / no-push flows in some setups. If deploy worked without those secrets but rollback fails asking for them, that asymmetry is intentional.
+
 See [Deployment method guides](#deployment-method-guides) for full per-method variable tables with examples.
 
 ## `deployhub doctor` Output
@@ -1025,10 +1064,13 @@ The doctor command runs independent checks and always completes without crashing
   Checking Health endpoint...   ✓ URL reachable (HTTP 200)
   Checking Secrets...           ✓ All required env vars present
   Checking GitHub Actions...    ✓ Workflow file exists at .github/workflows/deployhub.yml
+  Checking Rollback workflow... ✓ Missing .github/workflows/deployhub-rollback.yml — run deployhub sync-workflows to add CI rollback (workflow_dispatch)
   Checking Storage write...     ✓ Test upload succeeded
 
-  ✓ Ready to deploy (10/10 checks passed)
+  ✓ Ready to deploy (11/11 checks passed)
 ```
+
+The **Rollback workflow** check is informational and non-blocking (`✓` even when the file is missing). It suggests `deployhub sync-workflows` so already-initialized projects can pick up `deployhub-rollback.yml` without a full re-init. When the file exists, the message confirms the path instead.
 
 If checks fail:
 
