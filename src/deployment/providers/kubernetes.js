@@ -8,6 +8,7 @@ import { createDockerImageDeployContext } from '../../utils/docker-image-deploy.
 import { resolveDockerImageRefForTag } from '../../utils/docker-image.js';
 import { ensureKubernetesNamespace } from '../../utils/kubernetes-namespace.js';
 import { syncKubernetesDeploymentImage } from '../../utils/kubernetes-deploy-image.js';
+import { getEnvSettings, mergeMethodSettingsIntoEnv } from '../../core/environments.js';
 
 /**
  * @param {import('../../core/config.js').DeployHubConfig} config
@@ -16,11 +17,15 @@ import { syncKubernetesDeploymentImage } from '../../utils/kubernetes-deploy-ima
  */
 export function createKubernetesProvider(config, envName, env = process.env) {
   const log = createLogger('kubernetes');
-  const imageOps = createDockerImageDeployContext(config, env, log);
+  const settings = getEnvSettings(config.environments?.[envName]);
+  const effectiveEnv = mergeMethodSettingsIntoEnv(env, settings);
+  const imageOps = createDockerImageDeployContext(config, effectiveEnv, log);
 
-  const kubeconfig = env.KUBECONFIG || path.join(os.homedir(), '.kube', 'config');
-  const context = env.KUBE_CONTEXT || '';
-  const namespace = env.KUBE_NAMESPACE || config.project || 'default';
+  const kubeconfig =
+    effectiveEnv.KUBECONFIG || path.join(os.homedir(), '.kube', 'config');
+  const context = effectiveEnv.KUBE_CONTEXT || '';
+  const namespace =
+    effectiveEnv.KUBE_NAMESPACE || config.project || 'default';
   const deploymentName = sanitizeK8sName(config.project || 'app');
 
   function getKubectlEnv() {
@@ -158,7 +163,11 @@ export function createKubernetesProvider(config, envName, env = process.env) {
       );
     }
 
-    const rollbackImage = resolveDockerImageRefForTag(config, env, meta.buildId).fullImage;
+    const rollbackImage = resolveDockerImageRefForTag(
+      config,
+      effectiveEnv,
+      meta.buildId
+    ).fullImage;
     log.info(
       `Rolling back Kubernetes to buildId=${meta.buildId} (image: ${rollbackImage})...`
     );

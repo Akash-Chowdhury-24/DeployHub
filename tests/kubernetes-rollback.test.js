@@ -285,4 +285,73 @@ describe('kubernetes provider rollback (artifact-based)', () => {
     });
     await expect(provider.rollback(tmp, {})).rejects.toThrow(/requires buildId/);
   });
+
+  test('rollback uses each environment config namespace in kubectl args', async () => {
+    const artifactDir = await seedK8sArtifact(tmp);
+    const config = {
+      project: 'myapp',
+      defaultEnvironment: 'production',
+      environments: {
+        testing: {
+          enabled: true,
+          method: 'kubernetes',
+          trigger: 'manual',
+          config: {
+            kubeNamespace: 'staging-ns',
+            dockerImageName: 'org/myapp',
+          },
+        },
+        production: {
+          enabled: true,
+          method: 'kubernetes',
+          trigger: 'manual',
+          config: {
+            kubeNamespace: 'prod-ns',
+            dockerImageName: 'org/myapp',
+          },
+        },
+      },
+    };
+
+    const productionProvider = createKubernetesProvider(config, 'production', {
+      ...REGISTRY_CREDS,
+    });
+    await productionProvider.rollback(artifactDir, {
+      buildId: '0.1.0-restored',
+      semver: '0.1.0',
+      remoteKey: 'myapp/builds/0.1.0-restored/artifact.zip',
+    });
+
+    const prodApply = mockExeca.mock.calls.find(
+      (c) => c[0] === 'kubectl' && c[1]?.[0] === 'apply'
+    );
+    expect(prodApply?.[1]).toEqual(expect.arrayContaining(['--namespace', 'prod-ns']));
+
+    jest.clearAllMocks();
+    ensureImageReadyForDeploy.mockResolvedValue({
+      ranCompose: false,
+      fullImage: 'org/myapp:0.1.0-restored',
+    });
+    mockExeca.mockImplementation(async (cmd, args = []) => {
+      if (cmd === 'kubectl' && args[0] === 'get' && args[1] === 'deployment') {
+        return { stdout: 'org/myapp:other' };
+      }
+      return { stdout: '' };
+    });
+
+    const testingProvider = createKubernetesProvider(config, 'testing', {
+      ...REGISTRY_CREDS,
+    });
+    await testingProvider.rollback(artifactDir, {
+      buildId: '0.1.0-restored',
+      semver: '0.1.0',
+      remoteKey: 'myapp/builds/0.1.0-restored/artifact.zip',
+    });
+
+    const testApply = mockExeca.mock.calls.find(
+      (c) => c[0] === 'kubectl' && c[1]?.[0] === 'apply'
+    );
+    expect(testApply?.[1]).toEqual(expect.arrayContaining(['--namespace', 'staging-ns']));
+    expect(testApply?.[1]).not.toEqual(expect.arrayContaining(['--namespace', 'prod-ns']));
+  });
 });

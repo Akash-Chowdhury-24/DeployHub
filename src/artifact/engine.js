@@ -13,6 +13,12 @@ import {
   copyDeployAssetsToArtifactDir,
 } from '../utils/scaffold.js';
 import { getGeneratedByMetadata, getArtifactReadmeFooter } from '../utils/author.js';
+import {
+  getEnabledEnvironmentNames,
+  getEnvMethod,
+  getEnvSettings,
+  resolveDefaultEnvironmentName,
+} from '../core/config.js';
 
 /**
  * @param {string} cwd
@@ -151,13 +157,14 @@ async function stageFrontendArtifact(cwd, stagingDir, config) {
 
   await copyKubernetesManifestsIfPresent(cwd, stagingDir);
 
-  const hasSshDeploy = (config.deploy || []).some(
-    (envName) => config.environments[envName]?.type === 'ssh'
+  const deployTargets = getEnabledEnvironmentNames(config);
+  const hasSshDeploy = deployTargets.some(
+    (envName) => getEnvMethod(config.environments[envName]) === 'ssh'
   );
 
   if (hasSshDeploy && !fs.existsSync(path.join(stagingDir, 'nginx.conf'))) {
-    const envName = config.deploy?.[0];
-    const env = envName ? config.environments[envName] : null;
+    const envName = resolveDefaultEnvironmentName(config) || deployTargets[0];
+    const env = envName ? getEnvSettings(config.environments[envName]) : null;
     const deployPath =
       env?.frontendDeployPath || env?.deployPath || env?.path || `/var/www/${config.project}`;
     const nginxConf = generateNginxConfig(config.project, deployPath, outputName);

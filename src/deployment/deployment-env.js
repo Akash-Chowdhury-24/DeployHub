@@ -505,6 +505,216 @@ export function getDeploymentSecretChecklistItems(deployType, config = null) {
 }
 
 /**
+ * Uppercase env name for secret prefixes (e.g. production → PRODUCTION).
+ * @param {string} envName
+ * @returns {string}
+ */
+export function envSecretPrefix(envName) {
+  return (
+    String(envName || 'default')
+      .toUpperCase()
+      .replace(/[^A-Z0-9]+/g, '_')
+      .replace(/^_+|_+$/g, '') || 'DEFAULT'
+  );
+}
+
+/**
+ * Trade-off (superseded for per-env grandfathering): true when 2+ environments exist.
+ * Prefer envUsesPrefixedSecrets(envName, config) so the original env stays unprefixed.
+ *
+ * @param {Record<string, unknown>} [environments]
+ * @returns {boolean}
+ */
+export function shouldPrefixEnvSecrets(environments) {
+  return Object.keys(environments || {}).length > 1;
+}
+
+/**
+ * Which environment keeps reading unprefixed secrets (SSH_HOST, not ENV_SSH_HOST).
+ * Once established, this must not silently change when more environments are added.
+ *
+ * @param {Record<string, unknown>} config
+ * @returns {string|null}
+ */
+export function resolveUnprefixedSecretEnvironment(config) {
+  const envs = /** @type {Record<string, unknown>} */ (config.environments || {});
+  const named = config.unprefixedSecretEnvironment;
+  if (typeof named === 'string' && envs[named]) return named;
+
+  const names = Object.keys(envs);
+  if (names.length === 1) return names[0];
+  if (typeof config.defaultEnvironment === 'string' && envs[config.defaultEnvironment]) {
+    return config.defaultEnvironment;
+  }
+  return names[0] || null;
+}
+
+/**
+ * Whether this environment's CI secrets use ENVNAME_KEY prefixes.
+ * - 0–1 environments: never prefixed (BC).
+ * - 2+ environments: every env EXCEPT the grandfathered unprefixedSecretEnvironment is prefixed.
+ *
+ * @param {string} envName
+ * @param {Record<string, unknown>} config
+ * @returns {boolean}
+ */
+export function envUsesPrefixedSecrets(envName, config) {
+  const envs = config.environments || {};
+  if (Object.keys(envs).length <= 1) return false;
+  const unprefixed = resolveUnprefixedSecretEnvironment(config);
+  return envName !== unprefixed;
+}
+
+/**
+ * @param {string} envName
+ * @param {string} key
+ * @returns {string}
+ */
+export function prefixSecretKey(envName, key) {
+  return `${envSecretPrefix(envName)}_${key}`;
+}
+
+/**
+ * Overlay prefixed CI secrets (e.g. STAGING_SSH_HOST) onto the unprefixed names
+ * providers already read (SSH_HOST). Used when a workflow job carries secrets for
+ * multiple environments — static YAML can only map one value per unprefixed key.
+ *
+ * For prefixed environments, ambient unprefixed leftovers (e.g. a developer's
+ * shell SSH_HOST from another project) are cleared unless a matching prefixed
+ * secret is present — config settings (host, dockerImageName, …) still win via
+ * provider resolution / mergeMethodSettingsIntoEnv.
+ *
+ * @param {string} envName
+ * @param {Record<string, unknown>} config
+ * @param {Record<string, string|undefined>} [env]
+ * @returns {Record<string, string|undefined>}
+ */
+export function applyEnvSecretOverlay(envName, config, env = process.env) {
+  /** @type {Record<string, string|undefined>} */
+  const out = { ...env };
+  if (!envUsesPrefixedSecrets(envName, config)) {
+    return out;
+  }
+
+  const entry = /** @type {Record<string, unknown>|undefined} */ (
+    (config.environments || {})[envName]
+  );
+  const method =
+    (entry && typeof entry.method === 'string' && entry.method) ||
+    (entry && typeof entry.type === 'string' && entry.type) ||
+    null;
+  if (!method) return out;
+
+  const keys = getDeploymentWorkflowSecretKeys(method, /** @type {any} */ (config));
+  for (const key of keys) {
+    const prefixed = prefixSecretKey(envName, key);
+    if (out[prefixed]) {
+      out[key] = out[prefixed];
+    } else {
+      // Prefixed envs must NOT silently inherit ambient unprefixed leftovers
+      // (e.g. shell SSH_HOST from another project). Config settings still win
+      // via settings.host || env.SSH_HOST in providers.
+      delete out[key];
+    }
+  }
+  return out;
+}
+
+/**
+ * Workflow secret names for one environment (prefixed only when that env requires it).
+ * @param {string} envName
+ * @param {string} deployType
+ * @param {import('../core/config.js').DeployHubConfig} [config]
+ * @param {Record<string, unknown>} [environments]
+ * @returns {string[]}
+ */
+export function getDeploymentWorkflowSecretKeysForEnv(
+  envName,
+  deployType,
+  config = null,
+  environments = null
+) {
+  const keys = getDeploymentWorkflowSecretKeys(deployType, config);
+  const cfg = {
+    ...(config || {}),
+    environments: environments || config?.environments || {},
+  };
+  if (!envUsesPrefixedSecrets(envName, cfg)) {
+    return keys;
+  }
+  return keys.map((k) => prefixSecretKey(envName, k));
+}
+
+/**
+ * Checklist items for one environment (prefixed keys when that env requires it).
+ * @param {string} envName
+ * @param {string} deployType
+ * @param {import('../core/config.js').DeployHubConfig} [config]
+ * @param {Record<string, unknown>} [environments]
+ * @returns {SecretChecklistItem[]}
+ */
+export function getDeploymentSecretChecklistItemsForEnv(
+  envName,
+  deployType,
+  config = null,
+  environments = null
+) {
+  const items = getDeploymentSecretChecklistItems(deployType, config);
+  const cfg = {
+    ...(config || {}),
+    environments: environments || config?.environments || {},
+  };
+  if (!envUsesPrefixedSecrets(envName, cfg)) {
+    return items;
+  }
+  return items.map((item) => ({
+    ...item,
+    key: prefixSecretKey(envName, item.key),
+    note: item.note
+      ? `${item.note} (env: ${envName})`
+      : `Secret for environment "${envName}"`,
+  }));
+}
+
+/**
+ * Required doctor/CI secret keys for one environment.
+ * @param {string} envName
+ * @param {string} deployType
+ * @param {import('../core/config.js').DeployHubConfig} [config]
+ * @param {Record<string, unknown>} [environments]
+ * @returns {string[]}
+ */
+export function getDeploymentSecretKeysForEnv(
+  envName,
+  deployType,
+  config = null,
+  environments = null
+) {
+  const keys = getDeploymentSecretKeys(deployType, config);
+  const cfg = {
+    ...(config || {}),
+    environments: environments || config?.environments || {},
+  };
+  if (!envUsesPrefixedSecrets(envName, cfg)) {
+    return keys;
+  }
+  return keys.map((k) => prefixSecretKey(envName, k));
+}
+
+/**
+ * Unprefixed process-env key ↔ GitHub secret name for one env.
+ * @param {string} envName
+ * @param {string} unprefixedKey
+ * @param {Record<string, unknown>} config
+ * @returns {string} secret name to look up in GitHub / doctor
+ */
+export function resolveSecretNameForEnv(envName, unprefixedKey, config) {
+  return envUsesPrefixedSecrets(envName, config)
+    ? prefixSecretKey(envName, unprefixedKey)
+    : unprefixedKey;
+}
+
+/**
  * Format a checklist item for console output.
  * @param {SecretChecklistItem} item
  */

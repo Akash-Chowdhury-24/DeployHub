@@ -1,6 +1,77 @@
 import chalk from 'chalk';
-import axios from 'axios';
 import { loadConfig, loadEnv } from '../core/config.js';
+import { resolveEnvTargets } from '../core/environments.js';
+import {
+  anyEnvHasResolvableHealthCheckUrl,
+  runHealthChecksForEnvs,
+  formatHealthCheckAllSummary,
+} from '../utils/health-check.js';
+
+/**
+ * Standalone verify — same per-env URL resolution and summary as the deploy pipeline stage.
+ *
+ * @param {import('../core/config.js').DeployHubConfig} config
+ * @param {string|undefined} envFlag — omitted = defaultEnvironment; `"all"` = every enabled
+ * @param {{ httpGet?: (url: string, timeoutMs: number) => Promise<{ status: number }> }} [options]
+ * @returns {Promise<{ ok: boolean, targets: string[], results: object[], failures: object[], summary: string, message: string }>}
+ */
+export async function runVerify(config, envFlag, options = {}) {
+  const { targets, skippedDisabled } = resolveEnvTargets(config, envFlag);
+
+  if (targets.length === 0) {
+    return {
+      ok: false,
+      targets,
+      results: [],
+      failures: [],
+      summary: '',
+      message: 'No enabled environments to verify.',
+      skippedDisabled,
+    };
+  }
+
+  if (!anyEnvHasResolvableHealthCheckUrl(config, targets)) {
+    const label =
+      targets.length === 1
+        ? `environment "${targets[0]}"`
+        : 'the selected environment(s)';
+    return {
+      ok: false,
+      targets,
+      results: [],
+      failures: [],
+      summary: '',
+      message: `No health check URL configured for ${label}. Set healthCheck.url or environments.<name>.config.healthCheckUrl.`,
+      skippedDisabled,
+    };
+  }
+
+  const { results, failures } = await runHealthChecksForEnvs(config, targets, options);
+  const multi = targets.length > 1 || failures.length > 0;
+  const summary = multi ? formatHealthCheckAllSummary(results, failures) : '';
+
+  let message = '';
+  if (failures.length === 0 && results.length === 1 && !multi) {
+    const r = results[0];
+    message = `Health check passed (${r.envName}): HTTP ${r.status} (${r.elapsed}ms)`;
+  } else if (failures.length === 0 && results.length === 0) {
+    message = `No health check URL configured for the selected environment(s).`;
+  }
+
+  return {
+    ok: failures.length === 0 && results.length > 0,
+    targets,
+    results,
+    failures,
+    summary,
+    message:
+      message ||
+      (failures.length > 0
+        ? failures[0].error
+        : `All ${results.length} environment(s) passed health checks.`),
+    skippedDisabled,
+  };
+}
 
 /**
  * @param {import('commander').Command} program
@@ -8,48 +79,41 @@ import { loadConfig, loadEnv } from '../core/config.js';
 export function registerVerifyCommand(program) {
   program
     .command('verify')
-    .description('Run health check on configured endpoint')
-    .action(async () => {
+    .description('Run health check on configured endpoint (default environment, or --env)')
+    .option(
+      '--env <name>',
+      'Environment to verify (name, or "all" for every enabled environment)'
+    )
+    .action(async (opts) => {
       loadEnv();
       const config = await loadConfig();
-      const url = config.healthCheck?.url;
 
-      if (!url) {
-        console.error(chalk.red('No health check URL configured in deployhub.config.json'));
+      let outcome;
+      try {
+        outcome = await runVerify(config, opts.env);
+      } catch (err) {
+        console.error(chalk.red(err instanceof Error ? err.message : String(err)));
         process.exit(1);
       }
 
-      const timeout = (config.healthCheck.timeout || 30) * 1000;
-      const start = Date.now();
+      for (const name of outcome.skippedDisabled || []) {
+        console.log(chalk.gray(`Skipping disabled environment "${name}"`));
+      }
 
-      try {
-        const response = await axios.get(url, {
-          timeout,
-          validateStatus: () => true,
-        });
-        const elapsed = Date.now() - start;
-        const ok = response.status >= 200 && response.status < 400;
+      if (outcome.summary) {
+        console.log('');
+        console.log(outcome.summary);
+      } else if (outcome.ok && outcome.message) {
+        console.log(chalk.green(`✓ ${outcome.message}`));
+      }
 
-        if (ok) {
-          console.log(
-            chalk.green(`✓ Health check passed: HTTP ${response.status} (${elapsed}ms)`)
-          );
-        } else {
-          console.log(
-            chalk.red(`✗ Health check failed: HTTP ${response.status} (${elapsed}ms)`)
-          );
-          process.exit(1);
+      if (!outcome.ok) {
+        if (!outcome.summary && outcome.message) {
+          console.error(chalk.red(`✗ ${outcome.message}`));
         }
-      } catch (err) {
-        const elapsed = Date.now() - start;
-        console.error(
-          chalk.red(
-            `✗ Health check failed: ${err instanceof Error ? err.message : String(err)} (${elapsed}ms)`
-          )
-        );
         process.exit(1);
       }
     });
 }
 
-export default { registerVerifyCommand };
+export default { registerVerifyCommand, runVerify };

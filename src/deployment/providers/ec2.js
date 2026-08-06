@@ -1,6 +1,7 @@
 import { execa } from 'execa';
 import { createSshProvider } from './ssh.js';
 import { createLogger } from '../../logger/index.js';
+import { getEnvSettings } from '../../core/config.js';
 
 /**
  * @param {import('../../core/config.js').DeployHubConfig} config
@@ -9,13 +10,13 @@ import { createLogger } from '../../logger/index.js';
  */
 export function createEc2Provider(config, envName, env = process.env) {
   const log = createLogger('ec2');
-  const instanceId = env.EC2_INSTANCE_ID;
-  const region = env.AWS_REGION || 'us-east-1';
+  const settings = getEnvSettings(config.environments[envName]);
+  const instanceId = env.EC2_INSTANCE_ID || settings.ec2InstanceId;
+  const region = env.AWS_REGION || settings.awsRegion || 'us-east-1';
 
   async function resolveHost() {
-    const environment = config.environments[envName];
-    if (environment?.host || env.SSH_HOST) {
-      return environment?.host || env.SSH_HOST;
+    if (settings.host || env.SSH_HOST) {
+      return settings.host || env.SSH_HOST;
     }
 
     if (!instanceId) {
@@ -76,10 +77,7 @@ export function createEc2Provider(config, envName, env = process.env) {
         'Could not resolve host via EC2 instance lookup, and no SSH_HOST was set — provide one or the other.'
       );
     }
-    const environment = config.environments[envName];
-    if (environment) {
-      environment.host = host;
-    }
+    settings.host = host;
     return createSshProvider(config, envName, { ...env, SSH_HOST: host });
   }
 

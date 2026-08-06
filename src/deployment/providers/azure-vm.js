@@ -1,6 +1,7 @@
 import { execa } from 'execa';
 import { createSshProvider } from './ssh.js';
 import { createLogger } from '../../logger/index.js';
+import { getEnvSettings } from '../../core/config.js';
 
 /**
  * @param {import('../../core/config.js').DeployHubConfig} config
@@ -9,14 +10,14 @@ import { createLogger } from '../../logger/index.js';
  */
 export function createAzureVmProvider(config, envName, env = process.env) {
   const log = createLogger('azure-vm');
-  const subscriptionId = env.AZURE_SUBSCRIPTION_ID;
-  const resourceGroup = env.AZURE_RESOURCE_GROUP;
-  const vmName = env.AZURE_VM_NAME;
+  const settings = getEnvSettings(config.environments[envName]);
+  const subscriptionId = env.AZURE_SUBSCRIPTION_ID || settings.azureSubscriptionId;
+  const resourceGroup = env.AZURE_RESOURCE_GROUP || settings.azureResourceGroup;
+  const vmName = env.AZURE_VM_NAME || settings.azureVmName;
 
   async function resolveHost() {
-    const environment = config.environments[envName];
-    if (environment?.host || env.SSH_HOST) {
-      return environment?.host || env.SSH_HOST;
+    if (settings.host || env.SSH_HOST) {
+      return settings.host || env.SSH_HOST;
     }
 
     if (!subscriptionId || !resourceGroup || !vmName) {
@@ -73,10 +74,7 @@ export function createAzureVmProvider(config, envName, env = process.env) {
         'Could not resolve host via Azure VM lookup, and no SSH_HOST was set — provide one or the other.'
       );
     }
-    const environment = config.environments[envName];
-    if (environment) {
-      environment.host = host;
-    }
+    settings.host = host;
     return createSshProvider(config, envName, { ...env, SSH_HOST: host });
   }
 

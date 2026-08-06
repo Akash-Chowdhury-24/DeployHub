@@ -1,12 +1,19 @@
 import fs from 'fs-extra';
 import path from 'path';
+import yaml from 'js-yaml';
 import { getWorkflowHeaderComment } from './author.js';
 import {
   generateDeploymentEnvSection,
   getDeploymentWorkflowSecretKeys,
   getDeploymentSecretChecklistItems,
+  getDeploymentWorkflowSecretKeysForEnv,
+  getDeploymentSecretChecklistItemsForEnv,
+  shouldPrefixEnvSecrets,
+  prefixSecretKey,
+  envUsesPrefixedSecrets,
   DEPLOYMENT_ENV_KEYS,
 } from '../deployment/deployment-env.js';
+import { getEnvMethod, getEnvTrigger, isEnvEnabled } from '../core/environments.js';
 
 /** @typedef {'aws'|'azure'|'gcp'|'gdrive'|'dropbox'|'local'|'ftp'|'ssh'} ProviderEnvKey */
 
@@ -217,7 +224,9 @@ const KUBECTL_VERSION = 'v1.30.4';
  * @returns {boolean}
  */
 function hasKubernetesDeploy(deployEnvironments, environments) {
-  return deployEnvironments.some((envName) => environments[envName]?.type === 'kubernetes');
+  return deployEnvironments.some(
+    (envName) => getEnvMethod(environments[envName]) === 'kubernetes'
+  );
 }
 
 /**
@@ -263,43 +272,94 @@ export const DEPLOY_WORKFLOW_FILENAME = 'deployhub.yml';
 export const ROLLBACK_WORKFLOW_FILENAME = 'deployhub-rollback.yml';
 
 /**
+ * Upsert a `KEY: value` line into the workflow env set (LHS must be unique for valid YAML).
+ * @param {Set<string>} envVars
+ * @param {string} lhs
+ * @param {string} valueExpr
+ */
+function upsertWorkflowEnvLine(envVars, lhs, valueExpr) {
+  const linePrefix = `${lhs}: `;
+  for (const entry of [...envVars]) {
+    if (entry.startsWith(linePrefix)) {
+      envVars.delete(entry);
+    }
+  }
+  envVars.add(`${linePrefix}${valueExpr}`);
+}
+
+/**
  * Shared env entries for deploy and rollback workflows (same secret resolution).
- * Uses getDeploymentWorkflowSecretKeys(env.type) — no separate rollback list.
+ * Multi-env: secrets are prefixed (PRODUCTION_SSH_HOST) but mapped to unprefixed
+ * process env names the CLI already understands (SSH_HOST).
+ *
+ * Prefixed secret names are also exported as their own env vars so a single job can
+ * carry credentials for every environment; deploy/rollback overlays them per target.
  *
  * @param {string[]} storageProviders
  * @param {string[]} deployEnvironments
- * @param {Record<string, { type: string }>} environments
+ * @param {Record<string, { type?: string, method?: string }>} environments
  * @param {import('../core/config.js').DeployHubConfig} [config]
+ * @param {{ mapForEnv?: string|null }} [options] — when set, only map that env's secrets to unprefixed keys
  * @returns {Set<string>}
  */
 export function buildWorkflowEnvEntries(
   storageProviders,
   deployEnvironments,
   environments,
-  config = null
+  config = null,
+  options = {}
 ) {
   /** @type {Set<string>} */
-  const envVars = new Set(['DEPLOYHUB_ENV: production']);
+  const envVars = new Set([
+    `DEPLOYHUB_ENV: ${options.mapForEnv || deployEnvironments[0] || 'production'}`,
+  ]);
 
   for (const provider of storageProviders) {
     const keys = PROVIDER_ENV_MAP[provider] || [];
     for (const key of keys) {
-      envVars.add(`${key}: \${{ secrets.${key} }}`);
+      upsertWorkflowEnvLine(envVars, key, `\${{ secrets.${key} }}`);
     }
   }
 
-  for (const envName of deployEnvironments) {
+  const targets = options.mapForEnv
+    ? [options.mapForEnv]
+    : deployEnvironments;
+
+  const cfg = { ...(config || {}), environments };
+
+  for (const envName of targets) {
     const env = environments[envName];
     if (!env) continue;
 
-    const keys = getDeploymentWorkflowSecretKeys(env.type, config);
-    for (const key of keys) {
-      envVars.add(`${key}: \${{ secrets.${key} }}`);
+    const method = getEnvMethod(env);
+    if (!method) continue;
+    const unprefixedKeys = getDeploymentWorkflowSecretKeys(method, config);
+    for (const key of unprefixedKeys) {
+      const secretName = envUsesPrefixedSecrets(envName, cfg)
+        ? prefixSecretKey(envName, key)
+        : key;
+      // Keep every env's prefixed secret available under its full CI name.
+      if (secretName !== key) {
+        upsertWorkflowEnvLine(envVars, secretName, `\${{ secrets.${secretName} }}`);
+      }
+      // Unprefixed mapping for CLI defaults (last target wins in static YAML;
+      // applyEnvSecretOverlay restores the correct env's values at deploy time).
+      upsertWorkflowEnvLine(envVars, key, `\${{ secrets.${secretName} }}`);
     }
   }
 
-  applyKubernetesWorkflowEnv(deployEnvironments, environments, envVars);
+  applyKubernetesWorkflowEnv(targets, environments, envVars);
   return envVars;
+}
+
+/**
+ * @param {Record<string, unknown>} environments
+ * @returns {string}
+ */
+function formatEnvironmentChoiceOptions(environments) {
+  const names = Object.keys(environments || {});
+  const options = [...names, 'all'];
+  return options.map((n) => `          - ${n}`).join('\n');
 }
 
 /**
@@ -339,7 +399,7 @@ export function extractWorkflowSecretKeys(yaml) {
 /**
  * @param {string[]} storageProviders
  * @param {string[]} deployEnvironments
- * @param {Record<string, { type: string }>} environments
+ * @param {Record<string, { type?: string, method?: string }>} environments
  * @param {string} [cliSource]
  * @param {import('../core/config.js').DeployHubConfig} [config]
  * @returns {string}
@@ -351,9 +411,22 @@ export function generateWorkflowYaml(
   cliSource = DEFAULT_NPM_CLI_SOURCE,
   config = null
 ) {
+  const envNames = Object.keys(environments || {});
+  const allDeployNames =
+    deployEnvironments.length > 0 ? deployEnvironments : envNames.filter((n) => isEnvEnabled(environments[n]));
+
+  // Push-triggered auto-deploy targets (build pipeline filters these in CI).
+  const pushEnvs = allDeployNames.filter(
+    (n) => isEnvEnabled(environments[n]) && getEnvTrigger(environments[n]) === 'push'
+  );
+
+  // Secrets for build job: storage + all push envs (or default if none are push).
+  const buildSecretEnvs =
+    pushEnvs.length > 0 ? pushEnvs : allDeployNames.slice(0, 1);
+
   const envVars = buildWorkflowEnvEntries(
     storageProviders,
-    deployEnvironments,
+    buildSecretEnvs,
     environments,
     config
   );
@@ -365,7 +438,7 @@ export function generateWorkflowYaml(
   const githubGitConfigStep = isGithubCliSource(cliSource)
     ? `${getGithubGitConfigStep()}\n`
     : '';
-  const kubernetesSteps = hasKubernetesDeploy(deployEnvironments, environments)
+  const kubernetesSteps = hasKubernetesDeploy(allDeployNames, environments)
     ? `${getKubernetesSetupSteps()}\n`
     : '';
 
@@ -375,11 +448,41 @@ export function generateWorkflowYaml(
       ? getInstallDepsCommand(config)
       : 'npm install';
 
+  const envChoiceOptions = formatEnvironmentChoiceOptions(environments);
+  const hasEnvs = envNames.length > 0;
+  const dispatchInputs = hasEnvs
+    ? `  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy (leave blank on push; use "all" for every enabled env)'
+        required: false
+        type: choice
+        options:
+${envChoiceOptions}
+`
+    : `  workflow_dispatch:
+`;
+
+  const manualDeployStep = hasEnvs
+    ? `      - name: Deploy (workflow_dispatch)
+        if: github.event_name == 'workflow_dispatch'
+        env:
+${envBlock}
+        run: |
+          ENV_INPUT="\${{ inputs.environment }}"
+          if [ -z "$ENV_INPUT" ] || [ "$ENV_INPUT" = "all" ]; then
+            ${getCliDeployCommand()} --env all
+          else
+            ${getCliDeployCommand()} --env "$ENV_INPUT"
+          fi
+`
+    : '';
+
   const workflow = `${getWorkflowHeaderComment()}name: DeployHub
 on:
   push:
     branches: [main]
-jobs:
+${dispatchInputs}jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
@@ -391,12 +494,21 @@ ${kubernetesSteps}${githubGitConfigStep}      - name: Install project dependenci
         run: ${installDepsCommand}
       - name: Install DeployHub CLI
         run: npm install ${installSpec} --no-save
-      - run: ${getCliBuildCommand()}
+      - name: Build (and auto-deploy push-triggered envs)
+        run: ${getCliBuildCommand()}
         env:
 ${envBlock}
-`;
+${manualDeployStep}`;
 
   return workflow;
+}
+
+/**
+ * Shell command to run deployhub deploy from the installed scoped package.
+ * @returns {string}
+ */
+export function getCliDeployCommand() {
+  return `node ./node_modules/${NPM_PACKAGE}/src/cli/index.js deploy`;
 }
 
 /**
@@ -404,7 +516,7 @@ ${envBlock}
  *
  * @param {string[]} storageProviders
  * @param {string[]} deployEnvironments
- * @param {Record<string, { type: string }>} environments
+ * @param {Record<string, { type?: string, method?: string }>} environments
  * @param {string} [cliSource]
  * @param {import('../core/config.js').DeployHubConfig} [config]
  * @returns {string}
@@ -416,9 +528,15 @@ export function generateRollbackWorkflowYaml(
   cliSource = DEFAULT_NPM_CLI_SOURCE,
   config = null
 ) {
+  const envNames = Object.keys(environments || {});
+  const allDeployNames =
+    deployEnvironments.length > 0
+      ? deployEnvironments
+      : envNames.filter((n) => isEnvEnabled(environments[n]));
+
   const envVars = buildWorkflowEnvEntries(
     storageProviders,
-    deployEnvironments,
+    allDeployNames,
     environments,
     config
   );
@@ -428,11 +546,43 @@ export function generateRollbackWorkflowYaml(
   const githubGitConfigStep = isGithubCliSource(cliSource)
     ? `${getGithubGitConfigStep()}\n`
     : '';
-  const kubernetesSteps = hasKubernetesDeploy(deployEnvironments, environments)
+  const kubernetesSteps = hasKubernetesDeploy(allDeployNames, environments)
     ? `${getKubernetesSetupSteps()}\n`
     : '';
 
   const rollbackCmd = getCliRollbackCommand();
+  const envChoiceOptions = formatEnvironmentChoiceOptions(environments);
+  const hasEnvs = envNames.length > 0;
+
+  const environmentInput = hasEnvs
+    ? `      environment:
+        description: 'Environment to roll back (or "all")'
+        required: false
+        type: choice
+        options:
+${envChoiceOptions}
+`
+    : '';
+
+  const rollbackRun = hasEnvs
+    ? `          ENV_INPUT="\${{ inputs.environment }}"
+          BUILD_INPUT="\${{ inputs.buildId }}"
+          ENV_FLAG=""
+          if [ -z "$ENV_INPUT" ] || [ "$ENV_INPUT" = "all" ]; then
+            ENV_FLAG="--env all"
+          else
+            ENV_FLAG="--env $ENV_INPUT"
+          fi
+          if [ -n "$BUILD_INPUT" ]; then
+            ${rollbackCmd} "$BUILD_INPUT" $ENV_FLAG
+          else
+            ${rollbackCmd} $ENV_FLAG
+          fi`
+    : `          if [ -n "\${{ inputs.buildId }}" ]; then
+            ${rollbackCmd} "\${{ inputs.buildId }}"
+          else
+            ${rollbackCmd}
+          fi`;
 
   return `${getWorkflowHeaderComment()}name: DeployHub Rollback
 on:
@@ -442,7 +592,7 @@ on:
         description: 'Exact buildId to restore (leave blank = previous build)'
         required: false
         type: string
-jobs:
+${environmentInput}jobs:
   rollback:
     runs-on: ubuntu-latest
     steps:
@@ -456,11 +606,7 @@ ${kubernetesSteps}${githubGitConfigStep}      - name: Install DeployHub CLI
         env:
 ${envBlock}
         run: |
-          if [ -n "\${{ inputs.buildId }}" ]; then
-            ${rollbackCmd} "\${{ inputs.buildId }}"
-          else
-            ${rollbackCmd}
-          fi
+${rollbackRun}
 `;
 }
 
@@ -568,6 +714,166 @@ export async function getRollbackWorkflowDoctorCheck(cwd, config) {
 }
 
 /**
+ * Expected CI secret names for the current config — same set a fresh
+ * `sync-workflows` would reference (via buildWorkflowEnvEntries).
+ *
+ * @param {import('../core/config.js').DeployHubConfig} config
+ * @param {'deploy'|'rollback'} [kind]
+ * @returns {Set<string>}
+ */
+export function expectedWorkflowSecretKeysFromConfig(config, kind = 'rollback') {
+  const environments = config.environments || {};
+  const allNames = Object.keys(environments);
+  /** @type {string[]} */
+  let targets;
+  if (kind === 'deploy') {
+    const enabled = allNames.filter((n) => isEnvEnabled(environments[n]));
+    const pushEnvs = enabled.filter((n) => getEnvTrigger(environments[n]) === 'push');
+    targets = pushEnvs.length > 0 ? pushEnvs : enabled.slice(0, 1);
+  } else {
+    targets = allNames;
+  }
+
+  const entries = buildWorkflowEnvEntries(
+    config.storage || [],
+    targets,
+    environments,
+    config
+  );
+
+  /** @type {Set<string>} */
+  const keys = new Set();
+  const re = /secrets\.([A-Z0-9_]+)/g;
+  for (const line of entries) {
+    let match;
+    re.lastIndex = 0;
+    while ((match = re.exec(line)) !== null) {
+      keys.add(match[1]);
+    }
+  }
+  return keys;
+}
+
+/**
+ * Lightweight drift check: checked-in workflow vs current config.
+ * Catches missing dispatch env options and missing required secret references.
+ *
+ * @param {string} yamlText
+ * @param {import('../core/config.js').DeployHubConfig} config
+ * @param {string} [filename]
+ * @returns {{ drifted: boolean, missingEnvs: string[], missingSecrets: string[], summary: string }}
+ */
+export function detectWorkflowConfigDrift(yamlText, config, filename = DEPLOY_WORKFLOW_FILENAME) {
+  /** @type {string[]} */
+  const missingEnvs = [];
+  /** @type {string[]} */
+  const missingSecrets = [];
+
+  let parsed;
+  try {
+    parsed = yaml.load(yamlText);
+  } catch {
+    return {
+      drifted: false,
+      missingEnvs,
+      missingSecrets,
+      summary: '',
+    };
+  }
+
+  if (!parsed || typeof parsed !== 'object') {
+    return { drifted: false, missingEnvs, missingSecrets, summary: '' };
+  }
+
+  const envNames = Object.keys(config.environments || {});
+  const root = /** @type {Record<string, any>} */ (parsed);
+  const options = root?.on?.workflow_dispatch?.inputs?.environment?.options;
+
+  if (Array.isArray(options) && envNames.length > 0) {
+    const optionSet = new Set(options.map(String));
+    for (const name of envNames) {
+      if (!optionSet.has(name)) missingEnvs.push(name);
+    }
+  } else if (envNames.length > 1) {
+    // Multi-env config but no dispatch dropdown — stale single-env workflow.
+    missingEnvs.push(...envNames);
+  }
+
+  const kind = filename.includes('rollback') ? 'rollback' : 'deploy';
+  const fileSecrets = new Set(extractWorkflowSecretKeys(yamlText));
+  const expected = expectedWorkflowSecretKeysFromConfig(config, kind);
+  for (const key of expected) {
+    if (!fileSecrets.has(key)) missingSecrets.push(key);
+  }
+
+  const drifted = missingEnvs.length > 0 || missingSecrets.length > 0;
+  /** @type {string[]} */
+  const parts = [];
+  if (missingEnvs.length > 0) {
+    parts.push(
+      `missing: ${missingEnvs.map((n) => `"${n}"`).join(', ')} in the dispatch dropdown`
+    );
+  }
+  if (missingSecrets.length > 0) {
+    const shown = missingSecrets.slice(0, 4);
+    parts.push(
+      `missing secret(s): ${shown.join(', ')}${missingSecrets.length > 4 ? ', …' : ''}`
+    );
+  }
+
+  return {
+    drifted,
+    missingEnvs,
+    missingSecrets,
+    summary: parts.join('; '),
+  };
+}
+
+/**
+ * Doctor helper: informational checks when checked-in workflows drift from config.
+ * Skips missing/unparseable files (other checks cover "file missing").
+ * Returns an empty array when everything is in sync or not applicable.
+ *
+ * @param {string} cwd
+ * @param {import('../core/config.js').DeployHubConfig} config
+ * @returns {Promise<{ name: string, pass: boolean, message: string }[]>}
+ */
+export async function getWorkflowDriftDoctorChecks(cwd, config) {
+  const envCount = Object.keys(config.environments || {}).length;
+  if (envCount === 0) return [];
+
+  /** @type {{ name: string, pass: boolean, message: string }[]} */
+  const checks = [];
+  const files = [DEPLOY_WORKFLOW_FILENAME, ROLLBACK_WORKFLOW_FILENAME];
+
+  for (const filename of files) {
+    const filePath = path.join(cwd, '.github', 'workflows', filename);
+    if (!(await fs.pathExists(filePath))) continue;
+
+    let text;
+    try {
+      text = await fs.readFile(filePath, 'utf8');
+    } catch {
+      continue;
+    }
+
+    const drift = detectWorkflowConfigDrift(text, config, filename);
+    if (!drift.drifted) continue;
+
+    checks.push({
+      name: `Workflow sync (${filename})`,
+      // Informational nudge — same pattern as missing rollback workflow (pass: true).
+      pass: true,
+      message:
+        `.github/workflows/${filename} looks out of date with your current environments config ` +
+        `(${drift.summary}). Run: deployhub sync-workflows`,
+    });
+  }
+
+  return checks;
+}
+
+/**
  * @param {string} cliSource
  * @param {string} [cwd]
  */
@@ -669,9 +975,15 @@ export function getGithubSecretsChecklist(
 
   for (const envName of deployEnvironments) {
     const env = environments[envName];
-    if (!env?.type) continue;
+    const method = getEnvMethod(env);
+    if (!method) continue;
 
-    for (const item of getDeploymentSecretChecklistItems(env.type, config)) {
+    for (const item of getDeploymentSecretChecklistItemsForEnv(
+      envName,
+      method,
+      config,
+      environments
+    )) {
       const existing = byKey.get(item.key);
       if (existing) {
         if (item.required && !existing.required) {
@@ -741,9 +1053,10 @@ export function generateEnvExampleContent(
 
   for (const envName of deployEnvironments) {
     const env = environments[envName];
-    if (!env?.type) continue;
+    const method = getEnvMethod(env);
+    if (!method) continue;
 
-    const deploySection = generateDeploymentEnvSection(env.type, config, environments);
+    const deploySection = generateDeploymentEnvSection(method, config, environments);
     if (deploySection) {
       sections.push(`${deploySection}\n`);
     }

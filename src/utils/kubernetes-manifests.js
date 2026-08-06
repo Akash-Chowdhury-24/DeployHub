@@ -1,6 +1,7 @@
 import fs from 'fs-extra';
 import path from 'path';
 import { resolveContainerPort } from './dockerfile-expose.js';
+import { getEnvMethod, getEnvSettings } from '../core/environments.js';
 
 /**
  * @param {string} name
@@ -143,7 +144,8 @@ export function patchKubernetesManifestPorts(yaml, port) {
  */
 export function resolveKubernetesManifestOptions(config, environments = {}, options = {}) {
   const envList = Object.values(environments);
-  const k8sEnv = envList.find((env) => env.type === 'kubernetes') || {};
+  const k8sRaw = envList.find((env) => getEnvMethod(env) === 'kubernetes') || {};
+  const k8sEnv = getEnvSettings(k8sRaw);
 
   const appName = config.project || 'app';
   const imageName =

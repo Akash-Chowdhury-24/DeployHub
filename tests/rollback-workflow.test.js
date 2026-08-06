@@ -42,8 +42,8 @@ describe('generateRollbackWorkflowYaml', () => {
       expect(yaml).toContain('required: false');
       expect(yaml).not.toContain('push:');
       expect(yaml).toContain(getCliRollbackCommand());
-      expect(yaml).toContain('if [ -n "${{ inputs.buildId }}" ]; then');
-      expect(yaml).toContain(`${getCliRollbackCommand()} "\${{ inputs.buildId }}"`);
+      expect(yaml).toContain('BUILD_INPUT="${{ inputs.buildId }}"');
+      expect(yaml).toContain(`${getCliRollbackCommand()} "$BUILD_INPUT" $ENV_FLAG`);
       expect(yaml).toContain('Install DeployHub CLI');
       expect(yaml).not.toContain('Install project dependencies');
       expect(yaml).not.toContain('deployhub build');

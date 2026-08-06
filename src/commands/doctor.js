@@ -4,14 +4,21 @@ import fs from 'fs-extra';
 import path from 'path';
 import os from 'os';
 import axios from 'axios';
-import { loadConfig, loadEnv } from '../core/config.js';
+import { loadConfig, loadEnv, getEnvMethod, getEnvSettings } from '../core/config.js';
+import {
+  isEnvEnabled,
+  resolveDefaultEnvironmentName,
+} from '../core/environments.js';
+import { loadEnvArtifactHistory } from '../storage/index.js';
 import { testProvider } from '../storage/index.js';
 import { getDeploymentProvider } from '../deployment/index.js';
-import { PROVIDER_ENV_MAP, getRollbackWorkflowDoctorCheck } from '../utils/github-actions.js';
+import { PROVIDER_ENV_MAP, getRollbackWorkflowDoctorCheck, getWorkflowDriftDoctorChecks } from '../utils/github-actions.js';
 import { printDoctorFooter } from '../utils/author.js';
 import { createLocalProvider } from '../storage/providers/local.js';
 import {
   getDeploymentEnvKeys,
+  getDeploymentSecretKeysForEnv,
+  envUsesPrefixedSecrets,
   getDeploymentSecretKeys,
 } from '../deployment/deployment-env.js';
 import { testSshConnectivity, validateSshKeyForDoctor, testSshHostReachability } from '../deployment/init-helpers.js';
@@ -26,6 +33,62 @@ import { namespaceExists } from '../utils/kubernetes-namespace.js';
 /**
  * @typedef {{ name: string, pass: boolean, message: string }} CheckResult
  */
+
+/**
+ * Whether doctor should `process.exit(1)` — only blocking (non-informational) failures count.
+ * @param {CheckResult[]} results
+ * @param {Set<string>} informationalCheckNames
+ * @returns {boolean}
+ */
+export function doctorHasBlockingFailures(results, informationalCheckNames) {
+  const blocking = results.filter((r) => !informationalCheckNames.has(r.name));
+  return blocking.some((r) => !r.pass);
+}
+
+/**
+ * Run per-env deployment checks with try/catch isolation (one env crash does not abort others).
+ * Disabled env failures are marked informational when `includeDisabled` is true.
+ *
+ * @param {import('../core/config.js').DeployHubConfig} config
+ * @param {string[]} envNames
+ * @param {{ includeDisabled?: boolean, runChecks?: typeof runDeploymentChecks }} [options]
+ * @returns {Promise<{ results: CheckResult[], informationalCheckNames: Set<string> }>}
+ */
+export async function collectEnvDeploymentChecks(config, envNames, options = {}) {
+  const includeDisabled = options.includeDisabled === true;
+  const runChecks = options.runChecks || runDeploymentChecks;
+  /** @type {CheckResult[]} */
+  const results = [];
+  /** @type {Set<string>} */
+  const informationalCheckNames = new Set();
+
+  for (const envName of envNames) {
+    const env = config.environments?.[envName];
+    if (!env) continue;
+    const enabled = isEnvEnabled(env);
+    if (!enabled && !includeDisabled) continue;
+
+    try {
+      const deployChecks = await runChecks(config, envName, env);
+      for (const c of deployChecks) {
+        c.name = `${envName}/${c.name}`;
+        results.push(c);
+        if (!enabled) informationalCheckNames.add(c.name);
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      const name = `${envName}/checks`;
+      results.push({
+        name,
+        pass: false,
+        message: `Check aborted: ${message}`,
+      });
+      if (!enabled) informationalCheckNames.add(name);
+    }
+  }
+
+  return { results, informationalCheckNames };
+}
 
 /** @type {Set<string>} */
 const NODE_FRAMEWORKS = new Set(['express', 'nestjs', 'fastify', 'koa', 'nextjs', 'node']);
@@ -102,9 +165,10 @@ function needsNginxActivationForDeploy(config) {
  * @param {Record<string, unknown>} envConfig
  * @returns {Promise<CheckResult[]>}
  */
-async function runDeploymentChecks(config, envName, envConfig) {
-  const deployType = envConfig.type;
+export async function runDeploymentChecks(config, envName, envConfig) {
+  const deployType = getEnvMethod(envConfig);
   if (!deployType || typeof deployType !== 'string') return [];
+  const settings = getEnvSettings(envConfig);
 
   /** @type {CheckResult[]} */
   const checks = [];
@@ -134,10 +198,10 @@ async function runDeploymentChecks(config, envName, envConfig) {
   );
 
   if (SSH_DEPLOY_TYPES.has(deployType)) {
-    const host = envConfig.host || process.env.SSH_HOST;
-    const user = envConfig.user || process.env.SSH_USER;
-    const keyPath = envConfig.keyPath || process.env.SSH_KEY_PATH;
-    const sshPort = Number(process.env.SSH_SSH_PORT || envConfig.sshPort) || 22;
+    const host = settings.host || process.env.SSH_HOST;
+    const user = settings.user || process.env.SSH_USER;
+    const keyPath = settings.keyPath || process.env.SSH_KEY_PATH;
+    const sshPort = Number(process.env.SSH_SSH_PORT || settings.sshPort) || 22;
 
     checks.push(
       await runCheck('SSH key', async () => {
@@ -171,7 +235,7 @@ async function runDeploymentChecks(config, envName, envConfig) {
       })
     );
 
-    const deployPaths = resolveSshDeployPaths(config, envConfig);
+    const deployPaths = resolveSshDeployPaths(config, settings);
     const sshUser = String(user || process.env.SSH_USER || 'your-user');
 
     for (const deployPath of deployPaths) {
@@ -634,11 +698,17 @@ export function registerDoctorCommand(program) {
   program
     .command('doctor')
     .description('Run pre-flight checks before deploying')
-    .action(async () => {
+    .option(
+      '--all',
+      'Also run method checks for disabled environments (failures are informational only)'
+    )
+    .action(async (opts) => {
       loadEnv();
       const cwd = process.cwd();
       /** @type {CheckResult[]} */
       const results = [];
+      /** @type {Set<string>} names of checks that must not fail the summary */
+      const informationalCheckNames = new Set();
 
       results.push(
         await runCheck('Git', async () => {
@@ -801,13 +871,48 @@ export function registerDoctorCommand(program) {
           }
         }
 
-        for (const envName of config.deploy || []) {
-          const env = config.environments[envName];
-          if (!env) continue;
-
-          const deployChecks = await runDeploymentChecks(config, envName, env);
-          results.push(...deployChecks);
+        // Per-environment summary + method checks (enabled by default; --all includes disabled)
+        const envNames = Object.keys(config.environments || {});
+        if (envNames.length > 0) {
+          console.log('');
+          console.log(chalk.bold('Environments:'));
+          for (const envName of envNames) {
+            const env = config.environments[envName];
+            const method = getEnvMethod(env) || '?';
+            const enabled = isEnvEnabled(env);
+            const status = enabled ? 'enabled' : 'disabled';
+            let last = 'never';
+            try {
+              const { entries } = await loadEnvArtifactHistory(
+                config.storage || [],
+                config.project,
+                envName,
+                { defaultEnvironment: resolveDefaultEnvironmentName(config) }
+              );
+              if (entries[0]?.buildId) {
+                last = entries[0].buildId;
+              }
+            } catch {
+              // doctor never crashes
+            }
+            const icon = enabled ? chalk.green('✓') : chalk.gray('–');
+            const hint = enabled
+              ? `last deploy: ${last}`
+              : `run \`deployhub env enable ${envName}\``;
+            console.log(
+              `  ${icon} ${envName.padEnd(14)} (${method})`.padEnd(36) +
+                `${status.padEnd(10)} — ${hint}`
+            );
+          }
+          console.log('');
         }
+
+        const { results: envResults, informationalCheckNames: envInfo } =
+          await collectEnvDeploymentChecks(config, envNames, {
+            includeDisabled: Boolean(opts.all),
+          });
+        results.push(...envResults);
+        for (const name of envInfo) informationalCheckNames.add(name);
 
         results.push(
           await runCheck('Health endpoint', async () => {
@@ -851,10 +956,13 @@ export function registerDoctorCommand(program) {
             const keys = PROVIDER_ENV_MAP[provider] || [];
             required.push(...keys);
           }
-          for (const envName of config.deploy || []) {
+          for (const envName of Object.keys(config.environments || {})) {
             const env = config.environments[envName];
-            if (!env?.type) continue;
-            required.push(...getDeploymentSecretKeys(env.type, config));
+            if (!isEnvEnabled(env)) continue;
+            const method = getEnvMethod(env);
+            if (!method) continue;
+            // Local/.env uses unprefixed names; prefixed CI names are checked separately below.
+            required.push(...getDeploymentSecretKeys(method, config));
           }
 
           const unique = [...new Set(required)];
@@ -871,9 +979,64 @@ export function registerDoctorCommand(program) {
               message: `Missing: ${missing.join(', ')}`,
             };
           }
-          return { name: 'Secrets', pass: true, message: 'All required env vars present' };
+          return { name: 'Secrets', pass: true, message: 'All required secrets present' };
         })
       );
+
+      // Explicit CI-prefixed secret reminders for non-grandfathered environments
+      if (config) {
+        const inCi = process.env.GITHUB_ACTIONS === 'true' || process.env.CI === 'true';
+        for (const envName of Object.keys(config.environments || {})) {
+          const env = config.environments[envName];
+          if (!isEnvEnabled(env)) continue;
+          if (!envUsesPrefixedSecrets(envName, config)) continue;
+          const method = getEnvMethod(env);
+          if (!method) continue;
+
+          const prefixedKeys = getDeploymentSecretKeysForEnv(
+            envName,
+            method,
+            config,
+            config.environments
+          );
+          const baseKeys = getDeploymentSecretKeys(method, config);
+
+          for (let i = 0; i < baseKeys.length; i++) {
+            const base = baseKeys[i];
+            const prefixed = prefixedKeys[i] || base;
+            if (prefixed === base) continue;
+
+            const checkName = `CI secret ${prefixed}`;
+            results.push(
+              await runCheck(checkName, async () => {
+                if (process.env[prefixed]) {
+                  return {
+                    name: checkName,
+                    pass: true,
+                    message: `Present for environment "${envName}"`,
+                  };
+                }
+                const localFallback =
+                  base === 'SSH_KEY'
+                    ? process.env.SSH_KEY || process.env.SSH_KEY_PATH
+                    : process.env[base];
+                if (!inCi && localFallback) {
+                  return {
+                    name: checkName,
+                    pass: false,
+                    message: `Add GitHub Actions secret "${prefixed}" for env "${envName}" (local has ${base}, but CI needs the prefixed name)`,
+                  };
+                }
+                return {
+                  name: checkName,
+                  pass: false,
+                  message: `Missing — add GitHub Actions secret "${prefixed}" for environment "${envName}"`,
+                };
+              })
+            );
+          }
+        }
+      }
 
       results.push(
         await runCheck('GitHub Actions', async () => {
@@ -910,6 +1073,13 @@ export function registerDoctorCommand(program) {
         );
       }
 
+      if (config) {
+        const driftChecks = await getWorkflowDriftDoctorChecks(cwd, config);
+        for (const check of driftChecks) {
+          results.push(await runCheck(check.name, async () => check));
+        }
+      }
+
       results.push(
         await runCheck('Storage write', async () => {
           const provider = createLocalProvider();
@@ -928,14 +1098,21 @@ export function registerDoctorCommand(program) {
       );
 
       console.log('');
-      const pad = (name) => name.padEnd(22);
+      const pad = (name) => name.padEnd(28);
       for (const r of results) {
-        const icon = r.pass ? chalk.green('✓') : chalk.red('✗');
-        console.log(`  Checking ${pad(r.name)}...  ${icon} ${r.message}`);
+        const info = informationalCheckNames.has(r.name);
+        const icon = r.pass
+          ? chalk.green('✓')
+          : info
+            ? chalk.yellow('!')
+            : chalk.red('✗');
+        const suffix = info && !r.pass ? chalk.gray(' (informational — disabled env)') : '';
+        console.log(`  Checking ${pad(r.name)}...  ${icon} ${r.message}${suffix}`);
       }
 
-      const passed = results.filter((r) => r.pass).length;
-      const total = results.length;
+      const blocking = results.filter((r) => !informationalCheckNames.has(r.name));
+      const passed = blocking.filter((r) => r.pass).length;
+      const total = blocking.length;
       console.log('');
       if (passed === total) {
         console.log(chalk.green.bold(`  ✓ Ready to deploy (${passed}/${total} checks passed)`));
@@ -950,7 +1127,16 @@ export function registerDoctorCommand(program) {
       console.log('');
       printDoctorFooter();
       console.log('');
+
+      if (doctorHasBlockingFailures(results, informationalCheckNames)) {
+        process.exit(1);
+      }
     });
 }
 
-export default { registerDoctorCommand };
+export default {
+  registerDoctorCommand,
+  runDeploymentChecks,
+  doctorHasBlockingFailures,
+  collectEnvDeploymentChecks,
+};

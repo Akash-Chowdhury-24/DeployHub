@@ -8,6 +8,54 @@ export function sanitizeNginxProjectName(projectName) {
 }
 
 /**
+ * Site filename for Nginx activation. Grandfathered envs keep legacy `{project}` only;
+ * additional environments use `{project}-{env}` so same-host multi-env deploys don't clobber.
+ *
+ * @param {string} projectName
+ * @param {string} envName
+ * @param {boolean} isGrandfathered
+ * @returns {string}
+ */
+export function sanitizeNginxSiteName(projectName, envName, isGrandfathered) {
+  const base = sanitizeNginxProjectName(projectName);
+  if (isGrandfathered) {
+    // Avoid breaking existing single-env servers that already have sites-available/{project}.
+    return base;
+  }
+  return `${base}-${sanitizeNginxProjectName(envName)}`;
+}
+
+/**
+ * @param {import('../core/config.js').DeployHubConfig} config
+ * @param {string} envName
+ * @returns {boolean}
+ */
+export function isGrandfatheredNginxEnv(config, envName) {
+  const envs = config.environments || {};
+  if (Object.keys(envs).length <= 1) {
+    return true;
+  }
+  const grandfather =
+    config.unprefixedSecretEnvironment || config.defaultEnvironment || null;
+  return Boolean(grandfather && envName === grandfather);
+}
+
+/**
+ * Resolve the Nginx site filename for an environment deploy.
+ *
+ * @param {import('../core/config.js').DeployHubConfig} config
+ * @param {string} envName
+ * @returns {string}
+ */
+export function resolveNginxSiteName(config, envName) {
+  return sanitizeNginxSiteName(
+    config.project || 'app',
+    envName,
+    isGrandfatheredNginxEnv(config, envName)
+  );
+}
+
+/**
  * Generate nginx server block config for SPA frontend deployments.
  *
  * @param {string} projectName
@@ -32,38 +80,38 @@ export function generateNginxConfig(projectName, deployPath, buildOutput = 'dist
 }
 
 /**
- * Debian/Ubuntu: sites-available path for this project.
- * @param {string} projectName
+ * Debian/Ubuntu: sites-available path for this site name.
+ * @param {string} siteName — output of resolveNginxSiteName / sanitizeNginxSiteName
  * @returns {string}
  */
-export function getNginxSitesAvailablePath(projectName) {
-  return `/etc/nginx/sites-available/${sanitizeNginxProjectName(projectName)}`;
+export function getNginxSitesAvailablePath(siteName) {
+  return `/etc/nginx/sites-available/${siteName}`;
 }
 
 /**
- * Debian/Ubuntu: sites-enabled symlink path for this project.
- * @param {string} projectName
+ * Debian/Ubuntu: sites-enabled symlink path for this site name.
+ * @param {string} siteName
  * @returns {string}
  */
-export function getNginxSitesEnabledPath(projectName) {
-  return `/etc/nginx/sites-enabled/${sanitizeNginxProjectName(projectName)}`;
+export function getNginxSitesEnabledPath(siteName) {
+  return `/etc/nginx/sites-enabled/${siteName}`;
 }
 
 /**
- * RHEL/Amazon Linux: conf.d drop-in path for this project.
- * @param {string} projectName
+ * RHEL/Amazon Linux: conf.d drop-in path for this site name.
+ * @param {string} siteName
  * @returns {string}
  */
-export function getNginxConfDPath(projectName) {
-  return `/etc/nginx/conf.d/${sanitizeNginxProjectName(projectName)}.conf`;
+export function getNginxConfDPath(siteName) {
+  return `/etc/nginx/conf.d/${siteName}.conf`;
 }
 
 /**
- * @param {string} projectName
+ * @param {string} siteName
  * @returns {string}
  */
-export function getNginxSitePath(projectName) {
-  return getNginxSitesAvailablePath(projectName);
+export function getNginxSitePath(siteName) {
+  return getNginxSitesAvailablePath(siteName);
 }
 
 /**
@@ -83,6 +131,9 @@ export function formatPasswordlessSudoGuidance(sshUser) {
 export default {
   generateNginxConfig,
   sanitizeNginxProjectName,
+  sanitizeNginxSiteName,
+  isGrandfatheredNginxEnv,
+  resolveNginxSiteName,
   getNginxSitesAvailablePath,
   getNginxSitesEnabledPath,
   getNginxConfDPath,

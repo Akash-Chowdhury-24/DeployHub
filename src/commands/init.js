@@ -2,7 +2,7 @@ import inquirer from 'inquirer';
 import chalk from 'chalk';
 import fs from 'fs-extra';
 import path from 'path';
-import { saveConfig, appendEnv } from '../core/config.js';
+import { saveConfig, appendEnv, getEnvMethod, getEnvSettings } from '../core/config.js';
 import { detectFrontend, detectBackend } from '../detectors/index.js';
 import {
   getFrontendInfo,
@@ -174,10 +174,11 @@ async function promptBuildSettings(defaults, side) {
 async function generateProjectScaffold(config, environments, cwd) {
   const envList = Object.values(environments);
 
-  const usesFrontendSsh = envList.some(
-    (env) =>
-      SSH_BASED.includes(env.type) || env.deploymentType === 'server'
-  );
+  const usesFrontendSsh = envList.some((env) => {
+    const method = getEnvMethod(env);
+    const settings = getEnvSettings(env);
+    return SSH_BASED.includes(method) || settings.deploymentType === 'server';
+  });
 
   const isFrontendProject =
     config.projectType === 'frontend' || config.projectType === 'both';
@@ -343,82 +344,112 @@ export function registerInitCommand(program) {
       let dockerEnvToAppend = null;
 
       if (answers.configureDeploy) {
-        if (projectType === 'backend') {
+        const { envMode } = await inquirer.prompt([
+          {
+            type: 'list',
+            name: 'envMode',
+            message:
+              'How many environments do you want to set up? (1 is fine — you can add more later)',
+            choices: [
+              { name: 'Just one environment', value: 'one' },
+              {
+                name: 'Multiple environments (e.g. development, testing, production)',
+                value: 'multi',
+              },
+            ],
+            default: 'one',
+          },
+        ]);
+
+        /**
+         * Shared single-round prompt used by init (loop) and env add.
+         * @param {{ envName?: string }} [opts]
+         */
+        async function promptAndStoreEnvironment(opts = {}) {
+          const deployTypeForPrompt =
+            projectType === 'both' ? 'both' : projectType;
           const deployAnswers = await promptServerDeployment(
             projectName,
-            projectType,
-            backendConfig
+            deployTypeForPrompt,
+            backendConfig,
+            {
+              ...(opts.envName ? { envName: opts.envName } : {}),
+              existingEnvNames: Object.keys(environments),
+            }
           );
           primaryDeployType = deployAnswers.deployType;
-          deploy.push(deployAnswers.envName);
-          environments[deployAnswers.envName] = buildServerEnvEntry(
+          const name = deployAnswers.envName;
+          deploy.push(name);
+
+          let entry = buildServerEnvEntry(
             deployAnswers,
             projectType,
             projectName,
             backendConfig,
             singleConfig
           );
+
+          if (projectType === 'both' && entry.config) {
+            entry = {
+              ...entry,
+              config: {
+                ...entry.config,
+                backendDeploymentType: 'server',
+                frontendDeploymentType: 'server',
+                deploymentType: 'server',
+              },
+            };
+          }
+
+          environments[name] = entry;
+
           if (deployAnswers.healthUrl) {
             healthUrl = deployAnswers.healthUrl;
-          } else if (singleConfig?.port) {
-            healthUrl = `http://localhost:${singleConfig.port}/health`;
-          }
-          dockerEnvToAppend = getDockerEnvSecrets(deployAnswers);
-        } else if (projectType === 'frontend') {
-          const deployAnswers = await promptServerDeployment(
-            projectName,
-            projectType,
-            backendConfig
-          );
-          primaryDeployType = deployAnswers.deployType;
-          deploy.push(deployAnswers.envName);
-          environments[deployAnswers.envName] = buildServerEnvEntry(
-            deployAnswers,
-            projectType,
-            projectName,
-            backendConfig,
-            singleConfig
-          );
-          if (deployAnswers.healthUrl) {
-            healthUrl = deployAnswers.healthUrl;
-          }
-          dockerEnvToAppend = getDockerEnvSecrets(deployAnswers);
-        } else {
-          const backendDeployAnswers = await promptServerDeployment(
-            projectName,
-            'both',
-            backendConfig
-          );
-          primaryDeployType = backendDeployAnswers.deployType;
-          deploy.push(backendDeployAnswers.envName);
-
-          /** @type {Record<string, unknown>} */
-          const envEntry = {
-            backendDeploymentType: 'server',
-            frontendDeploymentType: 'server',
-            deploymentType: 'server',
-          };
-
-          Object.assign(
-            envEntry,
-            buildServerEnvEntry(
-              backendDeployAnswers,
-              'both',
-              projectName,
-              backendConfig,
-              singleConfig
-            )
-          );
-
-          if (backendDeployAnswers.healthUrl) {
-            healthUrl = backendDeployAnswers.healthUrl;
-          } else if (backendConfig?.port) {
-            healthUrl = `http://localhost:${backendConfig.port}/health`;
+          } else if (!healthUrl && (singleConfig?.port || backendConfig?.port)) {
+            healthUrl = `http://localhost:${singleConfig?.port || backendConfig?.port}/health`;
           }
 
-          environments[backendDeployAnswers.envName] = envEntry;
-          dockerEnvToAppend = getDockerEnvSecrets(backendDeployAnswers);
+          const secrets = getDockerEnvSecrets(deployAnswers);
+          if (secrets) {
+            dockerEnvToAppend = { ...(dockerEnvToAppend || {}), ...secrets };
+          }
+          return name;
         }
+
+        if (envMode === 'one') {
+          // Transparent single env named "default" (visible later via env list).
+          await promptAndStoreEnvironment({ envName: 'default' });
+        } else {
+          let addMore = true;
+          while (addMore) {
+            await promptAndStoreEnvironment();
+            if (deploy.length >= 1) {
+              const again = await inquirer.prompt([
+                {
+                  type: 'confirm',
+                  name: 'more',
+                  message: 'Add another environment?',
+                  default: false,
+                },
+              ]);
+              addMore = again.more;
+            }
+          }
+        }
+      }
+
+      let defaultEnvironment = deploy[0];
+      if (deploy.length >= 2) {
+        const picked = await inquirer.prompt([
+          {
+            type: 'list',
+            name: 'defaultEnvironment',
+            message: 'Which environment is the default for `deployhub deploy`?',
+            choices: deploy,
+            default: deploy[0],
+          },
+        ]);
+        defaultEnvironment = picked.defaultEnvironment;
       }
 
       const version = await getProjectVersion(cwd);
@@ -432,7 +463,9 @@ export function registerInitCommand(program) {
         projectType,
         artifact: true,
         storage: answers.storage.length > 0 ? answers.storage : ['local'],
-        deploy,
+        defaultEnvironment: defaultEnvironment || undefined,
+        unprefixedSecretEnvironment: defaultEnvironment || undefined,
+        legacyHistoryMigrated: true,
         environments,
         healthCheck: {
           url: healthUrl,

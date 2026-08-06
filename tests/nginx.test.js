@@ -20,7 +20,7 @@ describe('nginx path helpers', () => {
     expect(getNginxConfDPath('demo-react-project')).toBe(
       '/etc/nginx/conf.d/demo-react-project.conf'
     );
-    expect(getNginxConfDPath('demo react project')).toBe(
+    expect(getNginxConfDPath(sanitizeNginxProjectName('demo react project'))).toBe(
       '/etc/nginx/conf.d/demo-react-project.conf'
     );
   });

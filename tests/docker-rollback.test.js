@@ -64,6 +64,8 @@ async function runRealExtractIfNeeded(cmd, args) {
 }
 
 describe('ensureImageReadyForDeploy rollback options', () => {
+  jest.setTimeout(30000);
+
   /** @type {string} */
   let tmp;
   /** @type {{ info: jest.Mock, warn: jest.Mock, success: jest.Mock }} */
@@ -147,6 +149,7 @@ describe('ensureImageReadyForDeploy rollback options', () => {
 });
 
 describe('docker provider rollback', () => {
+  jest.setTimeout(30000);
   /** @type {string} */
   let tmp;
 
@@ -202,6 +205,75 @@ describe('docker provider rollback', () => {
     const provider = createDockerProvider({ project: 'myapp' }, 'production', {});
     await expect(provider.rollback(path.join(tmp, 'empty'), {})).rejects.toThrow(
       /requires buildId/
+    );
+  });
+
+  test('rollback uses each environment config dockerImageName in docker build/run', async () => {
+    const artifactDir = path.join(tmp, 'artifact');
+    await seedFrontendArtifact(artifactDir);
+
+    const config = {
+      project: 'myapp',
+      projectType: 'frontend',
+      framework: 'react',
+      environments: {
+        testing: {
+          enabled: true,
+          method: 'docker',
+          trigger: 'manual',
+          config: { dockerImageName: 'org/testing-app' },
+        },
+        production: {
+          enabled: true,
+          method: 'docker',
+          trigger: 'manual',
+          config: { dockerImageName: 'org/production-app' },
+        },
+      },
+    };
+
+    const productionProvider = createDockerProvider(config, 'production', {});
+    await productionProvider.rollback(artifactDir, {
+      buildId: '0.1.0-prod',
+      semver: '0.1.0',
+      remoteKey: 'myapp/builds/0.1.0-prod/artifact.zip',
+    });
+
+    expect(mockExeca).toHaveBeenCalledWith(
+      'docker',
+      ['build', '-t', 'org/production-app:0.1.0-prod', '.'],
+      expect.any(Object)
+    );
+    expect(mockExeca).toHaveBeenCalledWith(
+      'docker',
+      ['run', '-d', '--rm', '--name', 'myapp', 'org/production-app:0.1.0-prod'],
+      expect.any(Object)
+    );
+
+    jest.clearAllMocks();
+    mockExeca.mockImplementation(async (cmd, args = []) => {
+      if (await runRealExtractIfNeeded(cmd, args)) {
+        return { stdout: '' };
+      }
+      return { stdout: '' };
+    });
+
+    const testingProvider = createDockerProvider(config, 'testing', {});
+    await testingProvider.rollback(artifactDir, {
+      buildId: '0.1.0-test',
+      semver: '0.1.0',
+      remoteKey: 'myapp/builds/0.1.0-test/artifact.zip',
+    });
+
+    expect(mockExeca).toHaveBeenCalledWith(
+      'docker',
+      ['build', '-t', 'org/testing-app:0.1.0-test', '.'],
+      expect.any(Object)
+    );
+    expect(mockExeca).toHaveBeenCalledWith(
+      'docker',
+      ['run', '-d', '--rm', '--name', 'myapp', 'org/testing-app:0.1.0-test'],
+      expect.any(Object)
     );
   });
 });

@@ -1,6 +1,7 @@
 import { execa } from 'execa';
 import { createSshProvider } from './ssh.js';
 import { createLogger } from '../../logger/index.js';
+import { getEnvSettings } from '../../core/config.js';
 
 /**
  * @param {import('../../core/config.js').DeployHubConfig} config
@@ -9,14 +10,14 @@ import { createLogger } from '../../logger/index.js';
  */
 export function createGcpVmProvider(config, envName, env = process.env) {
   const log = createLogger('gcp-vm');
-  const projectId = env.GCP_PROJECT_ID;
-  const zone = env.GCP_ZONE;
-  const instanceName = env.GCP_INSTANCE_NAME;
+  const settings = getEnvSettings(config.environments[envName]);
+  const projectId = env.GCP_PROJECT_ID || settings.gcpProjectId;
+  const zone = env.GCP_ZONE || settings.gcpZone;
+  const instanceName = env.GCP_INSTANCE_NAME || settings.gcpInstanceName;
 
   async function resolveHost() {
-    const environment = config.environments[envName];
-    if (environment?.host || env.SSH_HOST) {
-      return environment?.host || env.SSH_HOST;
+    if (settings.host || env.SSH_HOST) {
+      return settings.host || env.SSH_HOST;
     }
 
     if (!projectId || !zone || !instanceName) {
@@ -77,10 +78,7 @@ export function createGcpVmProvider(config, envName, env = process.env) {
         'Could not resolve host via GCP instance lookup, and no SSH_HOST was set — provide one or the other.'
       );
     }
-    const environment = config.environments[envName];
-    if (environment) {
-      environment.host = host;
-    }
+    settings.host = host;
     return createSshProvider(config, envName, { ...env, SSH_HOST: host });
   }
 

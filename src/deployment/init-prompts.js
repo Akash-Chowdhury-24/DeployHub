@@ -1,5 +1,6 @@
 import inquirer from 'inquirer';
 import chalk from 'chalk';
+import { createEnvNamePromptValidate } from '../core/environments.js';
 import {
   suggestSshUser,
   listKubeContexts,
@@ -24,27 +25,73 @@ export const SERVER_DEPLOY_TYPES = [
 const SSH_BASED = ['ssh', 'ec2', 'azure-vm', 'gcp-vm'];
 
 /**
+ * Prompt for one environment's deployment method + method-specific config.
+ * Shared by `deployhub init` and `deployhub env add`.
+ *
  * @param {string} projectName
  * @param {'frontend'|'backend'|'both'} projectType
  * @param {Record<string, unknown>|null} backendConfig
+ * @param {{
+ *   envName?: string,
+ *   existingEnvNames?: string[],
+ *   deployType?: string,
+ *   nonInteractive?: boolean,
+ * }} [options]
+ *   — when envName is set, skip the name prompt; existingEnvNames blocks in-session / config duplicates
+ *   — deployType skips the method list; nonInteractive uses defaults (requires deployType)
  */
-export async function promptServerDeployment(projectName, projectType, backendConfig) {
-  const isBackend = projectType === 'backend' || projectType === 'both';
+export async function promptServerDeployment(
+  projectName,
+  projectType,
+  backendConfig,
+  options = {}
+) {
+  const existingEnvNames = options.existingEnvNames || [];
+  const allowedMethods = new Set(SERVER_DEPLOY_TYPES.map((c) => c.value));
 
-  const base = await inquirer.prompt([
-    {
+  if (options.nonInteractive) {
+    if (!options.deployType || !allowedMethods.has(options.deployType)) {
+      throw new Error(
+        'Non-interactive env add requires --method <ssh|docker|ec2|azure-vm|gcp-vm|kubernetes>.'
+      );
+    }
+    return buildNonInteractiveDeployAnswers(options.deployType, projectName, options.envName);
+  }
+
+  /** @type {import('inquirer').QuestionCollection} */
+  const questions = [];
+
+  if (!options.deployType) {
+    questions.push({
       type: 'list',
       name: 'deployType',
       message: 'Deployment type:',
       choices: SERVER_DEPLOY_TYPES,
-    },
-    {
+    });
+  } else if (!allowedMethods.has(options.deployType)) {
+    throw new Error(
+      `Unknown deployment method "${options.deployType}". Use: ${[...allowedMethods].join(', ')}`
+    );
+  }
+
+  if (!options.envName) {
+    questions.push({
       type: 'input',
       name: 'envName',
       message: 'Environment name (e.g. production, staging):',
       default: 'production',
-    },
-  ]);
+      validate: createEnvNamePromptValidate(existingEnvNames),
+    });
+  }
+
+  const base =
+    questions.length > 0 ? await inquirer.prompt(questions) : {};
+  if (options.envName) {
+    base.envName = options.envName;
+  }
+  if (options.deployType) {
+    base.deployType = options.deployType;
+  }
 
   const deployType = base.deployType;
 
@@ -57,6 +104,50 @@ export async function promptServerDeployment(projectName, projectType, backendCo
   }
 
   return promptSshBasedDeployment(base, projectName, projectType, backendConfig, deployType);
+}
+
+/**
+ * Defaults for `deployhub env add <name> --method <type> --yes` (no prompts).
+ * @param {string} deployType
+ * @param {string} projectName
+ * @param {string} [envName]
+ */
+function buildNonInteractiveDeployAnswers(deployType, projectName, envName) {
+  const base = { deployType, envName: envName || 'default' };
+  if (deployType === 'docker') {
+    return {
+      ...base,
+      dockerImageName: projectName,
+      dockerRegistryUrl: '',
+      dockerRegistryUsername: '',
+      dockerRegistryToken: '',
+      dockerHost: '',
+      healthUrl: '',
+    };
+  }
+  if (deployType === 'kubernetes') {
+    return {
+      ...base,
+      kubeconfig: '~/.kube/config',
+      kubeContext: '',
+      kubeNamespace: projectName,
+      dockerImageName: projectName,
+      dockerRegistryUrl: '',
+      dockerRegistryUsername: '',
+      dockerRegistryToken: '',
+      healthUrl: '',
+    };
+  }
+  // ssh / ec2 / azure-vm / gcp-vm — host/user left empty (filled via secrets / env)
+  return {
+    ...base,
+    host: '',
+    user: 'deploy',
+    keyPath: '',
+    sshPort: '22',
+    deployPath: `/var/www/${projectName}`,
+    osHint: '',
+  };
 }
 
 /**
@@ -376,62 +467,76 @@ export function buildServerEnvEntry(
   singleConfig
 ) {
   /** @type {Record<string, unknown>} */
-  const envEntry = {
+  const settings = {
     deploymentType: 'server',
-    type: deployAnswers.deployType,
   };
 
   if (deployAnswers.deployType === 'kubernetes') {
-    envEntry.kubeconfig = deployAnswers.kubeconfig;
-    envEntry.kubeContext = deployAnswers.kubeContext;
-    envEntry.kubeNamespace = deployAnswers.kubeNamespace || projectName;
-    envEntry.dockerImageName = deployAnswers.dockerImageName || projectName;
-    envEntry.dockerRegistryUrl = deployAnswers.dockerRegistryUrl || '';
-    return envEntry;
+    settings.kubeconfig = deployAnswers.kubeconfig;
+    settings.kubeContext = deployAnswers.kubeContext;
+    settings.kubeNamespace = deployAnswers.kubeNamespace || projectName;
+    settings.dockerImageName = deployAnswers.dockerImageName || projectName;
+    settings.dockerRegistryUrl = deployAnswers.dockerRegistryUrl || '';
+    return {
+      enabled: true,
+      method: 'kubernetes',
+      trigger: 'manual',
+      config: settings,
+    };
   }
 
   if (deployAnswers.deployType === 'docker') {
-    envEntry.dockerImageName = deployAnswers.dockerImageName || projectName;
-    envEntry.dockerRegistryUrl = deployAnswers.dockerRegistryUrl || '';
-    envEntry.dockerHost = deployAnswers.dockerHost || '';
-    return envEntry;
+    settings.dockerImageName = deployAnswers.dockerImageName || projectName;
+    settings.dockerRegistryUrl = deployAnswers.dockerRegistryUrl || '';
+    settings.dockerHost = deployAnswers.dockerHost || '';
+    return {
+      enabled: true,
+      method: 'docker',
+      trigger: 'manual',
+      config: settings,
+    };
   }
 
-  envEntry.host = deployAnswers.host || '';
-  envEntry.user = deployAnswers.user || '';
-  envEntry.keyPath = deployAnswers.keyPath || '';
-  envEntry.sshPort = Number(deployAnswers.sshPort) || 22;
+  settings.host = deployAnswers.host || '';
+  settings.user = deployAnswers.user || '';
+  settings.keyPath = deployAnswers.keyPath || '';
+  settings.sshPort = Number(deployAnswers.sshPort) || 22;
 
-  if (deployAnswers.ec2InstanceId) envEntry.ec2InstanceId = deployAnswers.ec2InstanceId;
-  if (deployAnswers.awsRegion) envEntry.awsRegion = deployAnswers.awsRegion;
-  if (deployAnswers.azureSubscriptionId) envEntry.azureSubscriptionId = deployAnswers.azureSubscriptionId;
-  if (deployAnswers.azureResourceGroup) envEntry.azureResourceGroup = deployAnswers.azureResourceGroup;
-  if (deployAnswers.azureVmName) envEntry.azureVmName = deployAnswers.azureVmName;
-  if (deployAnswers.gcpProjectId) envEntry.gcpProjectId = deployAnswers.gcpProjectId;
-  if (deployAnswers.gcpZone) envEntry.gcpZone = deployAnswers.gcpZone;
-  if (deployAnswers.gcpInstanceName) envEntry.gcpInstanceName = deployAnswers.gcpInstanceName;
+  if (deployAnswers.ec2InstanceId) settings.ec2InstanceId = deployAnswers.ec2InstanceId;
+  if (deployAnswers.awsRegion) settings.awsRegion = deployAnswers.awsRegion;
+  if (deployAnswers.azureSubscriptionId) settings.azureSubscriptionId = deployAnswers.azureSubscriptionId;
+  if (deployAnswers.azureResourceGroup) settings.azureResourceGroup = deployAnswers.azureResourceGroup;
+  if (deployAnswers.azureVmName) settings.azureVmName = deployAnswers.azureVmName;
+  if (deployAnswers.gcpProjectId) settings.gcpProjectId = deployAnswers.gcpProjectId;
+  if (deployAnswers.gcpZone) settings.gcpZone = deployAnswers.gcpZone;
+  if (deployAnswers.gcpInstanceName) settings.gcpInstanceName = deployAnswers.gcpInstanceName;
 
   if (projectType === 'both') {
-    envEntry.frontendDeployPath =
+    settings.frontendDeployPath =
       deployAnswers.frontendDeployPath || `/var/www/${projectName}/public`;
-    envEntry.backendDeployPath =
+    settings.backendDeployPath =
       deployAnswers.backendDeployPath || `/var/www/${projectName}/api`;
-    envEntry.appName = deployAnswers.appName || `${projectName}-api`;
-    envEntry.framework = backendConfig?.framework || 'express';
-    envEntry.path = envEntry.backendDeployPath;
-    envEntry.backendDeploymentType = 'server';
+    settings.appName = deployAnswers.appName || `${projectName}-api`;
+    settings.framework = backendConfig?.framework || 'express';
+    settings.path = settings.backendDeployPath;
+    settings.backendDeploymentType = 'server';
   } else if (projectType === 'backend') {
-    envEntry.deployPath = deployAnswers.deployPath || `/var/www/${projectName}`;
-    envEntry.path = envEntry.deployPath;
-    envEntry.appName = deployAnswers.appName || projectName;
-    envEntry.framework = singleConfig?.framework || 'express';
-    envEntry.port = singleConfig?.port || 3000;
+    settings.deployPath = deployAnswers.deployPath || `/var/www/${projectName}`;
+    settings.path = settings.deployPath;
+    settings.appName = deployAnswers.appName || projectName;
+    settings.framework = singleConfig?.framework || 'express';
+    settings.port = singleConfig?.port || 3000;
   } else {
-    envEntry.deployPath = deployAnswers.deployPath || `/var/www/${projectName}`;
-    envEntry.path = envEntry.deployPath;
+    settings.deployPath = deployAnswers.deployPath || `/var/www/${projectName}`;
+    settings.path = settings.deployPath;
   }
 
-  return envEntry;
+  return {
+    enabled: true,
+    method: deployAnswers.deployType,
+    trigger: 'manual',
+    config: settings,
+  };
 }
 
 /**

@@ -4,10 +4,45 @@ import { createArtifact, repackArtifactZip } from '../artifact/engine.js';
 import { uploadToAll } from '../storage/index.js';
 import { deployToAll } from '../deployment/index.js';
 import { sendNotifications } from '../notifications/index.js';
-import axios from 'axios';
+import {
+  anyEnvHasResolvableHealthCheckUrl,
+  runHealthChecksForEnvs,
+} from '../utils/health-check.js';
 import { getProjectVersion } from '../utils/version.js';
 import { resolveBuildId } from '../utils/build-id.js';
 import { ensureDeployScaffold } from '../utils/scaffold.js';
+import {
+  getEnabledEnvironmentNames,
+  resolveDefaultEnvironmentName,
+  isEnvEnabled,
+  getEnvTrigger,
+} from './environments.js';
+
+/**
+ * Environments to deploy during `deployhub build` (pipeline.deploy).
+ * - Local: default environment only (promote elsewhere via `deploy --env`).
+ * - GitHub Actions push: every enabled env with trigger "push".
+ * - workflow_dispatch: none here (explicit deploy step handles --env).
+ *
+ * @param {import('./config.js').DeployHubConfig} config
+ * @param {Record<string, string|undefined>} [env]
+ * @returns {string[]}
+ */
+function pipelineDeployTargets(config, env = process.env) {
+  if (env.GITHUB_EVENT_NAME === 'workflow_dispatch') {
+    return [];
+  }
+  if (env.GITHUB_ACTIONS === 'true' || env.GITHUB_ACTIONS === '1') {
+    return Object.entries(config.environments || {})
+      .filter(([, entry]) => isEnvEnabled(entry) && getEnvTrigger(entry) === 'push')
+      .map(([name]) => name);
+  }
+  const def = resolveDefaultEnvironmentName(config);
+  if (def && getEnabledEnvironmentNames(config).includes(def)) {
+    return [def];
+  }
+  return getEnabledEnvironmentNames(config).slice(0, 1);
+}
 
 /**
  * @param {import('../core/config.js').DeployHubConfig} config
@@ -143,7 +178,8 @@ export function buildPipelineStages(config, cwd, state) {
       name: 'storage',
       enabled: (ctx) => {
         const willDeploy =
-          ctx.config.pipeline.deploy === true && (ctx.config.deploy?.length || 0) > 0;
+          ctx.config.pipeline.deploy === true &&
+          getEnabledEnvironmentNames(ctx.config).length > 0;
         if (willDeploy && (!ctx.config.storage || ctx.config.storage.length === 0)) {
           ctx.config.storage = ['local'];
         }
@@ -159,7 +195,8 @@ export function buildPipelineStages(config, cwd, state) {
     {
       name: 'deploy',
       enabled: (ctx) =>
-        ctx.config.pipeline.deploy === true && (ctx.config.deploy?.length || 0) > 0,
+        ctx.config.pipeline.deploy === true &&
+        getEnabledEnvironmentNames(ctx.config).length > 0,
       async run(ctx) {
         if (!ctx.state.storageCompleted) {
           throw new Error(
@@ -168,7 +205,8 @@ export function buildPipelineStages(config, cwd, state) {
         }
         const artifactDir = /** @type {string} */ (ctx.state.artifactDir);
         if (!artifactDir) throw new Error('No artifact to deploy');
-        const deployed = await deployToAll(ctx.config, artifactDir);
+        const targets = pipelineDeployTargets(ctx.config);
+        const deployed = await deployToAll(ctx.config, artifactDir, targets);
         ctx.state.deployedTargets = deployed;
 
         await repackArtifactZip(artifactDir);
@@ -180,23 +218,21 @@ export function buildPipelineStages(config, cwd, state) {
     },
     {
       name: 'verify',
-      enabled: (ctx) =>
-        ctx.config.pipeline.verify === true && !!ctx.config.healthCheck?.url,
+      enabled: (ctx) => {
+        if (ctx.config.pipeline.verify !== true) return false;
+        const deployed = /** @type {string[]} */ (ctx.state.deployedTargets || []);
+        return anyEnvHasResolvableHealthCheckUrl(ctx.config, deployed);
+      },
       async run(ctx) {
-        const url = ctx.config.healthCheck.url;
-        const timeout = (ctx.config.healthCheck.timeout || 30) * 1000;
-        const start = Date.now();
-        const response = await axios.get(url, {
-          timeout,
-          validateStatus: () => true,
-        });
-        const elapsed = Date.now() - start;
-        if (response.status < 200 || response.status >= 400) {
-          throw new Error(
-            `Health check failed: HTTP ${response.status} (${elapsed}ms)`
-          );
+        const deployed = /** @type {string[]} */ (ctx.state.deployedTargets || []);
+        const { results, failures } = await runHealthChecksForEnvs(ctx.config, deployed);
+        if (failures.length > 0) {
+          throw new Error(failures[0].error);
         }
-        ctx.state.healthCheck = { status: response.status, elapsed };
+        const last = results[results.length - 1];
+        if (last) {
+          ctx.state.healthCheck = { status: last.status, elapsed: last.elapsed };
+        }
       },
     },
     {

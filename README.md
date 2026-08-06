@@ -229,9 +229,22 @@ Or push to `main` / `master` — the generated workflow runs the same command.
 deployhub artifact list              # local artifacts
 deployhub artifact list --remote     # include storage history.json
 deployhub artifact restore <buildId> # download a past build
-deployhub deploy                     # deploy latest artifact without rebuilding
-deployhub rollback                   # previous build from history
-deployhub rollback <buildId>         # exact build (required if semver is ambiguous)
+
+deployhub deploy                     # deploy latest artifact to defaultEnvironment
+deployhub deploy --env staging       # deploy one named environment
+deployhub deploy --env all           # every enabled environment (skips disabled)
+
+deployhub rollback                   # previous build for defaultEnvironment
+deployhub rollback --env production  # roll back one env using its own history
+deployhub rollback 1.0.6-a1b2c3d --env staging
+deployhub rollback --env all         # continue-on-error across enabled envs
+
+deployhub env list                   # list environments (method, status, last deploy)
+deployhub env add staging            # add an environment (interactive method prompts)
+deployhub env enable staging         # include in deploy / --env all
+deployhub env disable staging        # exclude without deleting config
+deployhub env remove staging         # remove env (re-point defaultEnvironment first if needed)
+
 deployhub sync-workflows             # regenerate deploy + rollback GitHub Actions YAML
 deployhub sync-k8s-ports             # fix containerPort/targetPort in existing k8s manifests
 deployhub logs                       # last deployment logs
@@ -239,7 +252,7 @@ deployhub logs                       # last deployment logs
 
 ### Rollback behavior
 
-`deployhub rollback` restores a previous artifact from storage `history.json` and redeploys it:
+`deployhub rollback` restores a previous artifact from **that environment's** `envs/{env}/history.json` (legacy project `history.json` is treated as the default env's history) and redeploys it:
 
 | Argument | Behavior |
 |----------|----------|
@@ -293,12 +306,14 @@ Artifacts appear under `artifact/{projectName}/{date}/v{buildId}/` locally.
 **Remote storage** (S3 and other providers) uses a different layout:
 
 ```text
-{project}/builds/{buildId}/artifact.zip   # immutable per CI/build
-{project}/history.json                    # newest-first index for rollback / list --remote
-{project}/latest/artifact.zip             # mutable pointer overwritten every upload (NOT a backup)
+{project}/builds/{buildId}/artifact.zip          # immutable per CI/build (shared across envs)
+{project}/history.json                           # build catalog for artifact list --remote
+{project}/latest/artifact.zip                    # last uploaded build (NOT a backup)
+{project}/envs/{env}/history.json                # per-environment deploy history (rollback)
+{project}/envs/{env}/latest/artifact.zip         # last deploy to that env (NOT a backup)
 ```
 
-`buildId` is unique per pipeline run (e.g. `1.0.6-a1b2c3d`) even if `package.json` semver is unchanged. Legacy keys `{project}/v{semver}/artifact.zip` are no longer written; they remain readable for older uploads only.
+`buildId` is unique per pipeline run (e.g. `1.0.6-a1b2c3d`) even if `package.json` semver is unchanged. Legacy keys `{project}/v{semver}/artifact.zip` are no longer written; they remain readable for older uploads only. Build once, then promote the same `buildId` to any environment with `deployhub deploy --env`.
 
 ### Same steps for other languages
 
@@ -987,22 +1002,34 @@ Run `deployhub doctor` after any config change.
 
 | Command | Description |
 |---------|-------------|
-| `deployhub init` | Interactive project setup |
-| `deployhub build` | Full pipeline: detect → install → test → build → artifact → storage → deploy |
+| `deployhub init` | Interactive project setup (one or multiple environments) |
+| `deployhub build` | Full pipeline: detect → install → test → build → artifact → storage → deploy (default / push-triggered envs) |
 | `deployhub artifact create` | Create artifact from current build |
 | `deployhub artifact list [--remote]` | List local artifacts; `--remote` merges storage `history.json` |
 | `deployhub artifact restore <buildId\|semver>` | Download and extract an artifact |
 | `deployhub storage add <provider>` | Add storage provider credentials |
 | `deployhub storage list` | List storage providers and connection status |
-| `deployhub deploy` | Deploy latest artifact |
-| `deployhub rollback [buildId\|semver]` | Previous build, or exact buildId (ambiguous semver lists matches and exits) |
+| `deployhub deploy` | Deploy latest artifact to `defaultEnvironment` |
+| `deployhub deploy --env staging` | Deploy to one named environment |
+| `deployhub deploy --env all` | Deploy to every enabled environment (skips disabled) |
+| `deployhub rollback` | Roll back `defaultEnvironment` to its previous build |
+| `deployhub rollback --env production` | Roll back one env from `envs/{env}/history.json` |
+| `deployhub rollback <buildId> --env staging` | Restore an exact `buildId` to that environment |
+| `deployhub rollback --env all` | Roll back each enabled env (continue-on-error + summary) |
+| `deployhub env list` | List environments (method, enabled, trigger, last deploy) |
+| `deployhub env add <name>` | Add an environment (interactive method prompts; regenerates workflows) |
+| `deployhub env enable <name>` | Enable an environment for deploy / `--env all` |
+| `deployhub env disable <name>` | Disable without deleting config |
+| `deployhub env remove <name>` | Remove an environment (re-point `defaultEnvironment` first if needed) |
 | `deployhub sync-workflows` | Regenerate `.github/workflows/deployhub.yml` and `deployhub-rollback.yml` from config |
 | `deployhub sync-k8s-ports` | Update only `containerPort` / `targetPort` in `k8s/deployment.yaml` and `k8s/service.yaml` from Dockerfile `EXPOSE` (or config/fallback). Does **not** change replicas, resources, env, or probes. Heavily customized / multi-container manifests may need a manual review |
 | `deployhub logs` | Show logs from last deployment |
-| `deployhub doctor` | Pre-flight checks (including an informational warning if the rollback workflow file is missing) |
+| `deployhub doctor [--all]` | Pre-flight checks per environment (`--all` includes disabled envs as informational) |
 | `deployhub verify` | Health check on configured endpoint |
 | `deployhub clean` | Remove old local artifacts |
 | `deployhub update` | Check for CLI updates |
+
+**Tests:** `npm test` — currently **270 passing** across the Jest suites.
 
 ## GitHub Secrets
 
@@ -1072,6 +1099,8 @@ The doctor command runs independent checks and always completes without crashing
 
 The **Rollback workflow** check is informational and non-blocking (`✓` even when the file is missing). It suggests `deployhub sync-workflows` so already-initialized projects can pick up `deployhub-rollback.yml` without a full re-init. When the file exists, the message confirms the path instead.
 
+If checked-in workflow files exist but are **out of date** with `deployhub.config.json` (e.g. you ran `env add` or a silent migration and forgot `sync-workflows`), doctor also reports an informational **Workflow sync** nudge naming the missing environment or secret and suggesting `deployhub sync-workflows`. That check never fails the doctor exit code.
+
 If checks fail:
 
 ```
@@ -1104,9 +1133,11 @@ artifact/
 **Remote keys** (all storage providers):
 
 ```
-{project}/builds/{buildId}/artifact.zip
-{project}/history.json
-{project}/latest/artifact.zip    # overwritten every build — convenience pointer only, not version history
+{project}/builds/{buildId}/artifact.zip          # immutable per CI/build (shared across envs)
+{project}/history.json                           # build catalog for artifact list --remote
+{project}/latest/artifact.zip                    # overwritten every build — convenience pointer only
+{project}/envs/{env}/history.json                # per-environment deploy history (rollback)
+{project}/envs/{env}/latest/artifact.zip         # last deploy to that env (NOT a backup)
 ```
 
 Legacy (read-only fallback, no longer written): `{project}/v{semver}/artifact.zip`

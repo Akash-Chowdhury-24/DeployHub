@@ -12,6 +12,7 @@ import {
   hasKubernetesManifests,
   resolveKubernetesManifestOptionsFromCwd,
 } from './kubernetes-manifests.js';
+import { getEnvMethod } from '../core/environments.js';
 
 /**
  * @param {Record<string, Record<string, unknown>>} environments
@@ -20,7 +21,7 @@ import {
 export function getDeployTypes(environments) {
   return new Set(
     Object.values(environments)
-      .map((env) => /** @type {string} */ (env.type))
+      .map((env) => getEnvMethod(env))
       .filter(Boolean)
   );
 }

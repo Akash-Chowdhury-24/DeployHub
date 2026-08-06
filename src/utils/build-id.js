@@ -122,10 +122,31 @@ export function latestArtifactRemoteKey(project) {
 }
 
 /**
+ * Project-wide build catalog (newest-first). Legacy pre-multi-env history;
+ * also still written on upload as the available-builds index for `artifact list --remote`.
+ * Per-environment deploy history lives under envs/{env}/history.json.
  * @param {string} project
  */
 export function historyRemoteKey(project) {
   return `${project}/history.json`;
+}
+
+/**
+ * Per-environment deploy history (newest-first). Rollback resolves against this only.
+ * @param {string} project
+ * @param {string} envName
+ */
+export function envHistoryRemoteKey(project, envName) {
+  return `${project}/envs/${sanitizeBuildIdPart(envName)}/history.json`;
+}
+
+/**
+ * Per-environment "currently deployed" pointer (NOT a backup — same semantics as project latest/).
+ * @param {string} project
+ * @param {string} envName
+ */
+export function envLatestArtifactRemoteKey(project, envName) {
+  return `${project}/envs/${sanitizeBuildIdPart(envName)}/latest/artifact.zip`;
 }
 
 /**
@@ -145,5 +166,7 @@ export default {
   buildArtifactRemoteKey,
   latestArtifactRemoteKey,
   historyRemoteKey,
+  envHistoryRemoteKey,
+  envLatestArtifactRemoteKey,
   legacyArtifactRemoteKey,
 };

@@ -2,6 +2,7 @@ import { execa } from 'execa';
 import { createLogger } from '../../logger/index.js';
 import { createDockerImageDeployContext } from '../../utils/docker-image-deploy.js';
 import { resolveDockerImageRefForTag } from '../../utils/docker-image.js';
+import { getEnvSettings, mergeMethodSettingsIntoEnv } from '../../core/environments.js';
 
 /**
  * @param {import('../../core/config.js').DeployHubConfig} config
@@ -10,7 +11,9 @@ import { resolveDockerImageRefForTag } from '../../utils/docker-image.js';
  */
 export function createDockerProvider(config, envName, env = process.env) {
   const log = createLogger('docker');
-  const imageOps = createDockerImageDeployContext(config, env, log);
+  const settings = getEnvSettings(config.environments?.[envName]);
+  const effectiveEnv = mergeMethodSettingsIntoEnv(env, settings);
+  const imageOps = createDockerImageDeployContext(config, effectiveEnv, log);
   const { fullImage, getDockerEnv, ensureImageReadyForDeploy } = imageOps;
 
   /**
@@ -56,7 +59,12 @@ export function createDockerProvider(config, envName, env = process.env) {
       );
     }
 
-    const rollbackImage = resolveDockerImageRefForTag(config, env, meta.buildId).fullImage;
+    // Tag stays buildId-based; env only scopes which history informed this buildId.
+    const rollbackImage = resolveDockerImageRefForTag(
+      config,
+      effectiveEnv,
+      meta.buildId
+    ).fullImage;
     log.info(
       `Rolling back Docker to buildId=${meta.buildId} (image: ${rollbackImage})...`
     );

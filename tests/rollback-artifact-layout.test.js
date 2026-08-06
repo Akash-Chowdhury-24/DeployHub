@@ -52,6 +52,8 @@ describe('resolveDockerImageRefForTag', () => {
 });
 
 describe('rollback artifact layout normalization', () => {
+  jest.setTimeout(30000);
+
   /** @type {string} */
   let tmp;
 

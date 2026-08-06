@@ -3,10 +3,12 @@ import fs from 'fs-extra';
 import path from 'path';
 import os from 'os';
 import { createLogger } from '../../logger/index.js';
+import { getEnvSettings } from '../../core/config.js';
 import {
   getNginxSitesAvailablePath,
   getNginxSitesEnabledPath,
   getNginxConfDPath,
+  resolveNginxSiteName,
 } from '../../utils/nginx.js';
 import { shellQuote, formatRemoteCommandFailure } from '../../utils/shell-quote.js';
 
@@ -30,23 +32,24 @@ export function createSshProvider(config, envName, env = process.env) {
     throw new Error(`Environment "${envName}" not found in config`);
   }
 
-  const host = environment.host || env.SSH_HOST;
-  const user = environment.user || env.SSH_USER;
+  const settings = getEnvSettings(environment);
+  const host = settings.host || env.SSH_HOST;
+  const user = settings.user || env.SSH_USER;
   const deployPath =
-    environment.deployPath ||
-    environment.path ||
+    settings.deployPath ||
+    settings.path ||
     env.SSH_DEPLOY_PATH ||
     '/var/www/app';
   const frontendDeployPath =
-    environment.frontendDeployPath || deployPath;
+    settings.frontendDeployPath || deployPath;
   const backendDeployPath =
-    environment.backendDeployPath || deployPath;
+    settings.backendDeployPath || deployPath;
   const appName =
-    environment.appName || env.SSH_APP_NAME || config.project;
-  const port = environment.port || config.port || Number(env.SSH_PORT) || 3000;
+    settings.appName || env.SSH_APP_NAME || config.project;
+  const port = settings.port || config.port || Number(env.SSH_PORT) || 3000;
   const sshKey = env.SSH_KEY;
-  const keyPath = environment.keyPath || env.SSH_KEY_PATH;
-  const sshPort = Number(env.SSH_SSH_PORT) || environment.sshPort || 22;
+  const keyPath = settings.keyPath || env.SSH_KEY_PATH;
+  const sshPort = Number(env.SSH_SSH_PORT) || settings.sshPort || 22;
 
   const log = createLogger('ssh');
 
@@ -308,14 +311,16 @@ export function createSshProvider(config, envName, env = process.env) {
         : 'Detected Nginx layout: RHEL/Amazon Linux (conf.d)'
     );
 
+    const siteName = resolveNginxSiteName(config, envName);
+
     if (layout === 'debian') {
-      const sitePath = getNginxSitesAvailablePath(config.project);
-      const enabledPath = getNginxSitesEnabledPath(config.project);
+      const sitePath = getNginxSitesAvailablePath(siteName);
+      const enabledPath = getNginxSitesEnabledPath(siteName);
       await exec(ssh, `sudo cp ${sh(nginxConfRemote)} ${sh(sitePath)}`);
       await exec(ssh, `sudo ln -sf ${sh(sitePath)} ${sh(enabledPath)}`);
       log.info(`Nginx config installed: ${sitePath}`);
     } else {
-      const confPath = getNginxConfDPath(config.project);
+      const confPath = getNginxConfDPath(siteName);
       await exec(ssh, `sudo cp ${sh(nginxConfRemote)} ${sh(confPath)}`);
       log.info(`Nginx config installed: ${confPath}`);
     }
