@@ -28,6 +28,8 @@ import {
   promptServerDeployment,
   buildServerEnvEntry,
   getDockerEnvSecrets,
+  applyInitTriggerDefaults,
+  formatMultiEnvTriggerReminder,
   SSH_BASED,
 } from '../deployment/init-prompts.js';
 import {
@@ -452,6 +454,8 @@ export function registerInitCommand(program) {
         defaultEnvironment = picked.defaultEnvironment;
       }
 
+      applyInitTriggerDefaults(environments, deploy, defaultEnvironment);
+
       const version = await getProjectVersion(cwd);
       let hasDocker =
         (detectedFrontend?.hasDocker || detectedBackend?.hasDocker) ?? false;
@@ -571,6 +575,16 @@ export function registerInitCommand(program) {
       console.log('  • .github/workflows/deployhub-rollback.yml');
       console.log('  • .env.example');
       console.log('');
+
+      if (deploy.length >= 2 && defaultEnvironment) {
+        console.log(
+          chalk.yellow(
+            formatMultiEnvTriggerReminder(String(defaultEnvironment), deploy)
+          )
+        );
+        console.log('');
+      }
+
       printAuthorFooter();
     });
 }

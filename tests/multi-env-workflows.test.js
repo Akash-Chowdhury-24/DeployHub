@@ -42,7 +42,7 @@ describe('multi-env workflow generation', () => {
       unprefixedSecretEnvironment: 'development',
       environments,
     };
-    const yaml = generateWorkflowYaml(
+    const yamlText = generateWorkflowYaml(
       ['aws'],
       ['development', 'production'],
       environments,
@@ -50,16 +50,18 @@ describe('multi-env workflow generation', () => {
       config
     );
 
-    expect(yaml).toContain('workflow_dispatch:');
-    expect(yaml).toContain('environment:');
-    expect(yaml).toContain('type: choice');
-    expect(yaml).toContain('- development');
-    expect(yaml).toContain('- production');
-    expect(yaml).toContain('- all');
-    expect(yaml).toContain(getCliDeployCommand());
+    expect(yamlText).toContain('workflow_dispatch:');
+    expect(yamlText).toContain('environment:');
+    expect(yamlText).toContain('type: choice');
+    expect(yamlText).toContain('- development');
+    expect(yamlText).toContain('- production');
+    expect(yamlText).toContain('- all');
+    expect(yamlText).toContain(getCliDeployCommand());
     // Grandfathered development keeps secrets.SSH_HOST (not DEVELOPMENT_SSH_HOST)
-    expect(yaml).toContain('SSH_HOST: ${{ secrets.SSH_HOST }}');
-    expect(yaml).not.toContain('secrets.DEVELOPMENT_SSH_HOST');
+    expect(yamlText).toContain('SSH_HOST: ${{ secrets.SSH_HOST }}');
+    expect(yamlText).not.toContain('secrets.DEVELOPMENT_SSH_HOST');
+    // Manual production secrets appear on the Deploy (workflow_dispatch) step
+    expect(yamlText).toContain('PRODUCTION_');
   });
 
   test('rollback workflow secret parity with deploy across N envs', () => {

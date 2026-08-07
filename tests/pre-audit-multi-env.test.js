@@ -2,6 +2,7 @@ import { jest } from '@jest/globals';
 import fs from 'fs-extra';
 import os from 'os';
 import path from 'path';
+import yaml from 'js-yaml';
 
 const mockProviders = new Map();
 
@@ -420,8 +421,23 @@ describe('F — workflow generation (3 envs)', () => {
     expect(deployYaml).toContain('- production');
     expect(deployYaml).toContain('- all');
     expect(deployYaml).toContain('SSH_HOST: ${{ secrets.SSH_HOST }}');
-    // Build step env is push-triggered (development) only; manual env secrets live in rollback workflow.
-    expect(deployYaml).not.toContain('STAGING_DOCKER_REGISTRY_USERNAME');
+
+    // Step-scoped assertions (file-level "contains" missed Build vs dispatch split).
+    const parsed = yaml.load(deployYaml);
+    const buildStep = parsed.jobs.deploy.steps.find((s) =>
+      String(s.name || '').includes('Build')
+    );
+    const dispatchStep = parsed.jobs.deploy.steps.find((s) =>
+      String(s.name || '').includes('workflow_dispatch')
+    );
+    expect(buildStep.env.SSH_HOST).toBe('${{ secrets.SSH_HOST }}');
+    // Build: push-triggered development only — no manual staging/production secrets.
+    expect(buildStep.env.STAGING_DOCKER_REGISTRY_USERNAME).toBeUndefined();
+    expect(buildStep.env.PRODUCTION_KUBECONFIG).toBeUndefined();
+    // Dispatch: union of ALL enabled envs (dropdown can select staging/production/all).
+    expect(dispatchStep.env.STAGING_DOCKER_REGISTRY_USERNAME).toBe(
+      '${{ secrets.STAGING_DOCKER_REGISTRY_USERNAME }}'
+    );
     expect(rollbackYaml).toContain('STAGING_');
     expect(rollbackYaml).toContain('PRODUCTION_');
 

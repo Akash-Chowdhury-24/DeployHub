@@ -57,11 +57,12 @@ describe('CI secret overlay end-to-end (no cross-env leakage)', () => {
     const parsed = yaml.load(text);
     expect(parsed.jobs).toBeTruthy();
 
-    // Fixture that originally caused duplicate DOCKER_IMAGE_NAME keys
+    // Prefixed envs only emit PREFIX_DOCKER_IMAGE_NAME — no unprefixed last-wins line
+    // (grandfathered development is ssh here, so it never contributes DOCKER_IMAGE_NAME).
     const imageLines = text
       .split('\n')
       .filter((l) => /^\s+DOCKER_IMAGE_NAME:/.test(l));
-    expect(imageLines).toHaveLength(1);
+    expect(imageLines).toHaveLength(0);
 
     expect(text).toContain('STAGING_DOCKER_IMAGE_NAME:');
     expect(text).toContain('PRODUCTION_DOCKER_IMAGE_NAME:');
@@ -76,16 +77,17 @@ describe('CI secret overlay end-to-end (no cross-env leakage)', () => {
     expect(envUsesPrefixedSecrets('staging', config)).toBe(true);
     expect(envUsesPrefixedSecrets('production', config)).toBe(true);
 
-    // Simulate CI env block after GHA injects all secrets (last-wins unprefixed + per-env prefixed).
+    // Simulate CI env block after GHA injects per-env prefixed secrets plus
+    // grandfathered unprefixed bindings (no last-wins overwrite of SSH_*/etc.).
     /** @type {Record<string, string>} */
     const ciEnv = {
-      DOCKER_IMAGE_NAME: 'org/last-wins-from-yaml',
+      DOCKER_IMAGE_NAME: 'org/grandfathered-or-ambient',
       STAGING_DOCKER_IMAGE_NAME: 'org/staging-app',
       PRODUCTION_DOCKER_IMAGE_NAME: 'org/prod-app',
       SSH_HOST: 'dev.example.com',
       STAGING_DOCKER_REGISTRY_USERNAME: 'staging-user',
       PRODUCTION_DOCKER_REGISTRY_USERNAME: 'prod-user',
-      DOCKER_REGISTRY_USERNAME: 'last-wins-user',
+      DOCKER_REGISTRY_USERNAME: 'ambient-user',
     };
 
     // --- staging provider view (docker) ---
@@ -127,6 +129,6 @@ describe('CI secret overlay end-to-end (no cross-env leakage)', () => {
     // Grandfathered development: no DEVELOPMENT_* remap; unprefixed SSH_HOST kept
     const devEnv = applyEnvSecretOverlay('development', config, ciEnv);
     expect(devEnv.SSH_HOST).toBe('dev.example.com');
-    expect(devEnv.DOCKER_IMAGE_NAME).toBe('org/last-wins-from-yaml');
+    expect(devEnv.DOCKER_IMAGE_NAME).toBe('org/grandfathered-or-ambient');
   });
 });

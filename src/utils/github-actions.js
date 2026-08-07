@@ -1,6 +1,7 @@
 import fs from 'fs-extra';
 import path from 'path';
 import yaml from 'js-yaml';
+import { fileURLToPath } from 'url';
 import { getWorkflowHeaderComment } from './author.js';
 import {
   generateDeploymentEnvSection,
@@ -133,6 +134,34 @@ export function getCliInstallSpec(cliSource) {
     return normalized;
   }
   return normalized;
+}
+
+/**
+ * Version/range suitable as a package.json dependency VALUE for this CLI
+ * (key is already NPM_PACKAGE — do not embed the package name again).
+ *
+ * @param {string} [cliSource]
+ * @returns {string}
+ */
+export function getCliPackageJsonDependencyVersion(cliSource) {
+  const normalized = normalizeCliSource(cliSource);
+  if (normalized === DEFAULT_NPM_CLI_SOURCE) {
+    try {
+      const pkgPath = path.join(
+        path.dirname(fileURLToPath(import.meta.url)),
+        '../../package.json'
+      );
+      const pkg = fs.readJsonSync(pkgPath);
+      if (typeof pkg.version === 'string' && pkg.version.trim()) {
+        return `^${pkg.version.trim()}`;
+      }
+    } catch {
+      // fall through
+    }
+    return 'latest';
+  }
+  // github: / file: specs are valid package.json dependency values as-is
+  return getCliInstallSpec(cliSource);
 }
 
 /**
@@ -288,30 +317,50 @@ function upsertWorkflowEnvLine(envVars, lhs, valueExpr) {
 }
 
 /**
+ * Enabled environment names from the live `environments` map (preferred over
+ * a possibly-stale `deploy[]` argument passed into workflow generators).
+ * @param {Record<string, { type?: string, method?: string }>} environments
+ * @returns {string[]}
+ */
+function listEnabledEnvironmentNames(environments) {
+  return Object.keys(environments || {}).filter((n) => isEnvEnabled(environments[n]));
+}
+
+/**
+ * Push-triggered enabled envs — same set `pipelineDeployTargets` deploys in GHA.
+ * @param {Record<string, { type?: string, method?: string }>} environments
+ * @returns {string[]}
+ */
+function listPushEnvironmentNames(environments) {
+  return listEnabledEnvironmentNames(environments).filter(
+    (n) => getEnvTrigger(environments[n]) === 'push'
+  );
+}
+
+/**
  * Shared env entries for deploy and rollback workflows (same secret resolution).
- * Multi-env: secrets are prefixed (PRODUCTION_SSH_HOST) but mapped to unprefixed
- * process env names the CLI already understands (SSH_HOST).
- *
- * Prefixed secret names are also exported as their own env vars so a single job can
- * carry credentials for every environment; deploy/rollback overlays them per target.
+ * Multi-env: each environment contributes its own CI secret names (grandfathered
+ * unprefixed SSH_HOST, or PRODUCTION_SSH_HOST, etc.). Prefixed envs are NOT
+ * last-wins-mapped onto unprefixed keys — that would overwrite the grandfathered
+ * binding and leave production looking fine in YAML while development silently
+ * inherits the wrong credentials. `applyEnvSecretOverlay` remaps PREFIX_* →
+ * unprefixed names at deploy time for non-grandfathered targets.
  *
  * @param {string[]} storageProviders
- * @param {string[]} deployEnvironments
+ * @param {string[]} deployEnvironments — environments whose secrets to inject
  * @param {Record<string, { type?: string, method?: string }>} environments
  * @param {import('../core/config.js').DeployHubConfig} [config]
- * @param {{ mapForEnv?: string|null }} [options] — when set, only map that env's secrets to unprefixed keys
  * @returns {Set<string>}
  */
 export function buildWorkflowEnvEntries(
   storageProviders,
   deployEnvironments,
   environments,
-  config = null,
-  options = {}
+  config = null
 ) {
   /** @type {Set<string>} */
   const envVars = new Set([
-    `DEPLOYHUB_ENV: ${options.mapForEnv || deployEnvironments[0] || 'production'}`,
+    `DEPLOYHUB_ENV: ${deployEnvironments[0] || 'production'}`,
   ]);
 
   for (const provider of storageProviders) {
@@ -321,13 +370,9 @@ export function buildWorkflowEnvEntries(
     }
   }
 
-  const targets = options.mapForEnv
-    ? [options.mapForEnv]
-    : deployEnvironments;
-
   const cfg = { ...(config || {}), environments };
 
-  for (const envName of targets) {
+  for (const envName of deployEnvironments) {
     const env = environments[envName];
     if (!env) continue;
 
@@ -338,26 +383,26 @@ export function buildWorkflowEnvEntries(
       const secretName = envUsesPrefixedSecrets(envName, cfg)
         ? prefixSecretKey(envName, key)
         : key;
-      // Keep every env's prefixed secret available under its full CI name.
-      if (secretName !== key) {
-        upsertWorkflowEnvLine(envVars, secretName, `\${{ secrets.${secretName} }}`);
-      }
-      // Unprefixed mapping for CLI defaults (last target wins in static YAML;
-      // applyEnvSecretOverlay restores the correct env's values at deploy time).
-      upsertWorkflowEnvLine(envVars, key, `\${{ secrets.${secretName} }}`);
+      // Bind process.env[secretName] for this environment (prefixed or grandfathered).
+      upsertWorkflowEnvLine(envVars, secretName, `\${{ secrets.${secretName} }}`);
     }
   }
 
-  applyKubernetesWorkflowEnv(targets, environments, envVars);
+  applyKubernetesWorkflowEnv(deployEnvironments, environments, envVars);
   return envVars;
 }
 
 /**
+ * Choice options for workflow_dispatch — enabled environments only, plus `all`.
+ * Disabled envs are omitted so selecting them cannot waste a CI run.
+ *
  * @param {Record<string, unknown>} environments
  * @returns {string}
  */
 function formatEnvironmentChoiceOptions(environments) {
-  const names = Object.keys(environments || {});
+  const names = Object.keys(environments || {}).filter((n) =>
+    isEnvEnabled(environments[n])
+  );
   const options = [...names, 'all'];
   return options.map((n) => `          - ${n}`).join('\n');
 }
@@ -412,25 +457,40 @@ export function generateWorkflowYaml(
   config = null
 ) {
   const envNames = Object.keys(environments || {});
+  // Secret injection must follow live environments (same as pipelineDeployTargets),
+  // not a possibly-stale deploy[] argument — otherwise push-deployed envs missing
+  // from deploy[] get no secrets in the job env block.
+  const enabledEnvs = listEnabledEnvironmentNames(environments);
+  const pushEnvs = listPushEnvironmentNames(environments);
   const allDeployNames =
-    deployEnvironments.length > 0 ? deployEnvironments : envNames.filter((n) => isEnvEnabled(environments[n]));
+    enabledEnvs.length > 0
+      ? enabledEnvs
+      : deployEnvironments.length > 0
+        ? deployEnvironments
+        : envNames;
 
-  // Push-triggered auto-deploy targets (build pipeline filters these in CI).
-  const pushEnvs = allDeployNames.filter(
-    (n) => isEnvEnabled(environments[n]) && getEnvTrigger(environments[n]) === 'push'
-  );
-
-  // Secrets for build job: storage + all push envs (or default if none are push).
+  // Build step: union of secrets for every push-triggered env (build deploys all of them).
   const buildSecretEnvs =
     pushEnvs.length > 0 ? pushEnvs : allDeployNames.slice(0, 1);
 
-  const envVars = buildWorkflowEnvEntries(
+  // workflow_dispatch step: union for ALL enabled envs (dropdown can pick any / all).
+  const dispatchSecretEnvs = allDeployNames;
+
+  const buildEnvVars = buildWorkflowEnvEntries(
     storageProviders,
     buildSecretEnvs,
     environments,
     config
   );
-  const envBlock = formatWorkflowEnvBlock(envVars);
+  const buildEnvBlock = formatWorkflowEnvBlock(buildEnvVars);
+
+  const dispatchEnvVars = buildWorkflowEnvEntries(
+    storageProviders,
+    dispatchSecretEnvs,
+    environments,
+    config
+  );
+  const dispatchEnvBlock = formatWorkflowEnvBlock(dispatchEnvVars);
 
   const installSpec = getCliInstallSpec(cliSource);
   const backendSteps = getBackendSetupSteps(config);
@@ -467,7 +527,7 @@ ${envChoiceOptions}
     ? `      - name: Deploy (workflow_dispatch)
         if: github.event_name == 'workflow_dispatch'
         env:
-${envBlock}
+${dispatchEnvBlock}
         run: |
           ENV_INPUT="\${{ inputs.environment }}"
           if [ -z "$ENV_INPUT" ] || [ "$ENV_INPUT" = "all" ]; then
@@ -497,7 +557,7 @@ ${kubernetesSteps}${githubGitConfigStep}      - name: Install project dependenci
       - name: Build (and auto-deploy push-triggered envs)
         run: ${getCliBuildCommand()}
         env:
-${envBlock}
+${buildEnvBlock}
 ${manualDeployStep}`;
 
   return workflow;
@@ -529,10 +589,13 @@ export function generateRollbackWorkflowYaml(
   config = null
 ) {
   const envNames = Object.keys(environments || {});
+  const enabledEnvs = listEnabledEnvironmentNames(environments);
   const allDeployNames =
-    deployEnvironments.length > 0
-      ? deployEnvironments
-      : envNames.filter((n) => isEnvEnabled(environments[n]));
+    enabledEnvs.length > 0
+      ? enabledEnvs
+      : deployEnvironments.length > 0
+        ? deployEnvironments
+        : envNames.filter((n) => isEnvEnabled(environments[n]));
 
   const envVars = buildWorkflowEnvEntries(
     storageProviders,
@@ -727,11 +790,14 @@ export function expectedWorkflowSecretKeysFromConfig(config, kind = 'rollback') 
   /** @type {string[]} */
   let targets;
   if (kind === 'deploy') {
-    const enabled = allNames.filter((n) => isEnvEnabled(environments[n]));
-    const pushEnvs = enabled.filter((n) => getEnvTrigger(environments[n]) === 'push');
+    const pushEnvs = listPushEnvironmentNames(environments);
+    const enabled = listEnabledEnvironmentNames(environments);
+    // Deploy workflow Build step uses push envs; doctor also flags dispatch-needed
+    // secrets by using the broader enabled set via kind === 'rollback' / checklist.
     targets = pushEnvs.length > 0 ? pushEnvs : enabled.slice(0, 1);
   } else {
-    targets = allNames;
+    targets = allNames.length > 0 ? listEnabledEnvironmentNames(environments) : allNames;
+    if (targets.length === 0) targets = allNames;
   }
 
   const entries = buildWorkflowEnvEntries(
@@ -785,7 +851,7 @@ export function detectWorkflowConfigDrift(yamlText, config, filename = DEPLOY_WO
     return { drifted: false, missingEnvs, missingSecrets, summary: '' };
   }
 
-  const envNames = Object.keys(config.environments || {});
+  const envNames = listEnabledEnvironmentNames(config.environments || {});
   const root = /** @type {Record<string, any>} */ (parsed);
   const options = root?.on?.workflow_dispatch?.inputs?.environment?.options;
 
@@ -883,7 +949,9 @@ export async function addDeployhubToPackageJson(cliSource, cwd = process.cwd()) 
 
   const pkg = await fs.readJson(pkgPath);
   pkg.devDependencies = pkg.devDependencies || {};
-  pkg.devDependencies[NPM_PACKAGE] = getCliInstallSpec(cliSource);
+  // package.json value must be a semver range / "latest" / git URL — never "name@version"
+  // (that form is only for `npm install <spec>` via getCliInstallSpec).
+  pkg.devDependencies[NPM_PACKAGE] = getCliPackageJsonDependencyVersion(cliSource);
   delete pkg.devDependencies.deployhub;
   pkg.scripts = pkg.scripts || {};
   pkg.scripts['deployhub:build'] = 'deployhub build';

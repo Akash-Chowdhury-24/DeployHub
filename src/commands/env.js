@@ -6,6 +6,7 @@ import {
   saveConfig,
 } from '../core/config.js';
 import {
+  getEnabledEnvironmentNames,
   getEnvMethod,
   getEnvTrigger,
   isEnvEnabled,
@@ -25,6 +26,21 @@ import {
   envLatestArtifactRemoteKey,
 } from '../utils/build-id.js';
 
+/**
+ * Regenerate GitHub Actions workflows after env enable/disable/add/remove.
+ * @param {import('../core/config.js').DeployHubConfig} config
+ * @param {string} cwd
+ */
+async function regenerateWorkflows(config, cwd) {
+  await writeWorkflowFile(
+    config.storage || [],
+    getEnabledEnvironmentNames(config),
+    config.environments || {},
+    cwd,
+    config.cli?.source,
+    config
+  );
+}
 /**
  * Best-effort last buildId for an env from per-env deploy history.
  * @param {import('../core/config.js').DeployHubConfig} config
@@ -172,17 +188,7 @@ export function registerEnvCommand(program) {
 
       await saveConfig(config, cwd);
 
-      const enabledNames = Object.keys(config.environments).filter((n) =>
-        isEnvEnabled(config.environments[n])
-      );
-      await writeWorkflowFile(
-        config.storage || [],
-        enabledNames,
-        config.environments,
-        cwd,
-        config.cli?.source,
-        config
-      );
+      await regenerateWorkflows(config, cwd);
 
       log.success(`Added environment "${name}" (${deployAnswers.deployType})`);
       console.log(chalk.gray(`  defaultEnvironment: ${config.defaultEnvironment}`));
@@ -234,7 +240,9 @@ export function registerEnvCommand(program) {
       }
       config.environments[name].enabled = true;
       await saveConfig(config, cwd);
+      await regenerateWorkflows(config, cwd);
       console.log(chalk.green(`✓ Enabled environment "${name}"`));
+      console.log(chalk.gray('  Workflows regenerated — commit .github/workflows if using CI.'));
     });
 
   env
@@ -250,7 +258,9 @@ export function registerEnvCommand(program) {
       }
       config.environments[name].enabled = false;
       await saveConfig(config, cwd);
+      await regenerateWorkflows(config, cwd);
       console.log(chalk.yellow(`Disabled environment "${name}"`));
+      console.log(chalk.gray('  Workflows regenerated — commit .github/workflows if using CI.'));
     });
 
   env
@@ -301,17 +311,7 @@ export function registerEnvCommand(program) {
       }
       await saveConfig(config, cwd);
 
-      const enabledNames = Object.keys(config.environments).filter((n) =>
-        isEnvEnabled(config.environments[n])
-      );
-      await writeWorkflowFile(
-        config.storage || [],
-        enabledNames,
-        config.environments,
-        cwd,
-        config.cli?.source,
-        config
-      );
+      await regenerateWorkflows(config, cwd);
 
       console.log(chalk.green(`✓ Removed environment "${name}"`));
       console.log(

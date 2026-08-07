@@ -1,5 +1,6 @@
 import chalk from 'chalk';
 import { loadConfig, loadEnv } from '../core/config.js';
+import { getEnabledEnvironmentNames } from '../core/environments.js';
 import {
   writeWorkflowFile,
   DEPLOY_WORKFLOW_FILENAME,
@@ -22,8 +23,10 @@ export function registerSyncWorkflowsCommand(program) {
       const config = await loadConfig(cwd);
 
       const storage = config.storage || [];
-      const deploy = config.deploy || [];
       const environments = config.environments || {};
+      // Prefer enabled environments over legacy deploy[] so every reachable env
+      // gets its secrets into the regenerated workflow env blocks.
+      const deploy = getEnabledEnvironmentNames(config);
       const cliSource = config.cli?.source;
 
       await writeWorkflowFile(storage, deploy, environments, cwd, cliSource, config);

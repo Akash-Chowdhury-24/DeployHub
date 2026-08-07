@@ -75,6 +75,29 @@ describe('workflow config drift detection', () => {
     expect(drift.summary).toMatch(/missing secret/);
   });
 
+  test('disabled env missing from dropdown is not drift (only enabled required)', () => {
+    const config = {
+      ...twoEnvConfig,
+      environments: {
+        staging: twoEnvConfig.environments.staging,
+        production: {
+          ...twoEnvConfig.environments.production,
+          enabled: false,
+        },
+      },
+    };
+    const fresh = generateWorkflowYaml(
+      ['local'],
+      ['staging'],
+      config.environments,
+      CLI,
+      config
+    );
+    const drift = detectWorkflowConfigDrift(fresh, config, DEPLOY_WORKFLOW_FILENAME);
+    expect(drift.missingEnvs).not.toContain('production');
+    expect(fresh).not.toContain('- production\n');
+  });
+
   test('config and checked-in fixture in sync → no drift', () => {
     const fresh = generateRollbackWorkflowYaml(
       ['local'],

@@ -540,6 +540,57 @@ export function buildServerEnvEntry(
 }
 
 /**
+ * Apply init-time trigger defaults after environments are collected.
+ * - Exactly one env → always `push` (git push = auto-deploy).
+ * - Two or more → grandfathered/default gets `push`; all others stay `manual`.
+ *
+ * @param {Record<string, { trigger?: string }>} environments
+ * @param {string[]} deployNames
+ * @param {string|undefined|null} defaultEnvironment
+ */
+export function applyInitTriggerDefaults(environments, deployNames, defaultEnvironment) {
+  if (deployNames.length === 1 && environments[deployNames[0]]) {
+    environments[deployNames[0]].trigger = 'push';
+    return;
+  }
+  if (deployNames.length >= 2 && defaultEnvironment) {
+    for (const name of deployNames) {
+      if (!environments[name]) continue;
+      environments[name].trigger =
+        name === defaultEnvironment ? 'push' : 'manual';
+    }
+  }
+}
+
+/**
+ * End-of-init reminder for multi-env setups (grandfathered = push, others = manual).
+ * @param {string} grandfathered
+ * @param {string[]} allEnvNames
+ * @returns {string}
+ */
+export function formatMultiEnvTriggerReminder(grandfathered, allEnvNames) {
+  const others = allEnvNames.filter((n) => n !== grandfathered);
+  const otherList =
+    others.length > 0 ? others.map((n) => `"${n}"`).join(', ') : '(none)';
+  const exampleEnv = others[0] || '<env-name>';
+  return [
+    '─────────────────────────────────────────────',
+    `By default, only your first environment ("${grandfathered}")`,
+    `auto-deploys on push. Your other environment(s) — ${otherList} — are set to manual and will only deploy via:`,
+    '  deployhub deploy --env <name>',
+    'or GitHub Actions → Run workflow.',
+    '',
+    'To make an environment auto-deploy on push instead, open',
+    'deployhub.config.json and change its "trigger" to "push":',
+    '  "environments": {',
+    `    "${exampleEnv}": { "trigger": "push", ... }`,
+    '  }',
+    'Then run: deployhub sync-workflows',
+    '─────────────────────────────────────────────',
+  ].join('\n');
+}
+
+/**
  * @param {Awaited<ReturnType<typeof promptServerDeployment>>} deployAnswers
  * @returns {Record<string, string>|null}
  */

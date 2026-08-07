@@ -290,7 +290,7 @@ export function migrateConfigToEnvironments(raw) {
     newEnvironments.default = {
       enabled: true,
       method,
-      trigger: 'manual',
+      trigger: 'push',
       config: flatConfig,
     };
     for (const key of FLAT_DEPLOY_KEYS) {
@@ -323,7 +323,7 @@ export function migrateConfigToEnvironments(raw) {
     newEnvironments[defaultEnvironment] = {
       enabled: true,
       method: 'ssh',
-      trigger: 'manual',
+      trigger: 'push',
       config: {},
     };
   }

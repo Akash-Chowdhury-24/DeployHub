@@ -32,7 +32,7 @@ describe('config multi-env migration', () => {
     expect(config.environments.default).toEqual({
       enabled: true,
       method: 'ssh',
-      trigger: 'manual',
+      trigger: 'push',
       config: {
         host: '1.2.3.4',
         user: 'ubuntu',
@@ -179,12 +179,21 @@ describe('config multi-env migration', () => {
     }
   });
 
-  test('trigger defaults to manual and is never inferred as push', () => {
+  test('legacy environments without trigger stay manual (not inferred as push)', () => {
     const { config } = migrateConfigToEnvironments({
       project: 'demo',
       environments: { production: { type: 'ssh', host: 'x' } },
       deploy: ['production'],
     });
     expect(config.environments.production.trigger).toBe('manual');
+  });
+
+  test('flat single-env migration uses trigger push', () => {
+    const { config } = migrateConfigToEnvironments({
+      project: 'demo',
+      type: 'ssh',
+      host: '1.2.3.4',
+    });
+    expect(config.environments.default.trigger).toBe('push');
   });
 });
