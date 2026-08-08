@@ -257,12 +257,75 @@ deployhub logs                       # last deployment logs
 | Argument | Behavior |
 |----------|----------|
 | *(none)* | Rolls back to the **previous** build (second entry in newest-first history) |
-| Exact `buildId` | Rolls back to that specific build |
+| Exact `buildId` | Rolls back to that specific build **if it appears in that env's history** |
 | Semver / version string matching **multiple** builds | Does **not** guess — prints the matching `buildId`s and exits; re-run with an exact one |
 
 `buildId` looks like `{semver}-{stamp}` where the stamp is a short git SHA when available, otherwise a CI run id, otherwise a high-resolution timestamp. When `DOCKER_IMAGE_TAG` is left unset, Docker and Kubernetes use that same `buildId` as the image tag — so you can correlate an artifact in storage with the image that was pushed.
 
+### Rollback is scoped per environment
+
+Each environment maintains its own independent deploy history. When you roll back an environment, DeployHub only considers builds that were actually deployed **to that environment** — never builds deployed to a different environment, even if they're more recent or share the same project.
+
+For example: if `development` has deployed builds A, C, and D (in that order), and `production` has separately deployed builds B and D, then rolling back `production` moves it from D to B — **not** to C, even though C is technically a more recent build overall, because C was never deployed to `production` in the first place.
+
+You also cannot roll back an environment to a specific `buildId` that was never deployed to that environment — even with `deployhub rollback <buildId> --env <name>`, DeployHub will refuse if that buildId doesn't appear in that environment's own history. This guarantees every rollback returns an environment to a build that was genuinely running there before, never a build it never actually had.
+
+Storage layout (per project):
+
+```text
+{project}/builds/{buildId}/artifact.zip          # immutable build blobs (shared)
+{project}/envs/{env}/history.json                # that env's deploy history only
+{project}/envs/{env}/latest/artifact.zip         # last successful deploy to that env
+{project}/history.json                           # build catalog / legacy default-env history
+```
+
 For CI-triggered rollback, see [CI rollback](#ci-rollback-deployhub-rollbackyml).
+
+---
+
+## Multi-environment deployments
+
+DeployHub supports multiple named environments in one project (e.g. `development` + `production`), each with its own method, secrets, trigger, and deploy history.
+
+### Commands
+
+```bash
+deployhub env list
+deployhub env add staging --method ssh          # or omit --method for interactive prompts
+deployhub env enable staging
+deployhub env disable staging
+deployhub env remove staging
+
+deployhub deploy --env staging
+deployhub deploy --env all                      # every enabled environment
+
+deployhub rollback --env production
+deployhub rollback 1.2.3-abc1234 --env staging
+deployhub rollback --env all                    # each env rolls back independently
+
+deployhub sync-workflows                        # regenerate deployhub.yml + deployhub-rollback.yml
+```
+
+### Trigger defaults
+
+| Situation | Default `trigger` |
+|-----------|-------------------|
+| Single-environment `init` | `"push"` — auto-deploy on push to main (original DeployHub behavior) |
+| First / grandfathered env in multi-env `init` | `"push"` |
+| Additional environments | `"manual"` — deploy only via Actions → Run workflow or `deployhub deploy --env` |
+
+Multi-env `init` prints a reminder naming which environments are push vs manual and how to edit `deployhub.config.json` (`environments.<name>.trigger`) if you want a different mix. After changing triggers or envs, run `deployhub sync-workflows` and commit the regenerated YAML.
+
+On a GitHub Actions **push**, `deployhub build` only auto-deploys environments with `trigger: "push"`. Environments with `trigger: "manual"` are never deployed on push — even though their secrets are present in the job for dispatch/rollback.
+
+### Secret naming
+
+| Environment | GitHub Secret / env var style |
+|-------------|-------------------------------|
+| Grandfathered / original (`unprefixedSecretEnvironment`) | Unprefixed: `SSH_HOST`, `SSH_KEY`, `DOCKER_IMAGE_NAME`, … |
+| Every additional environment | Prefixed: `PRODUCTION_SSH_HOST`, `STAGING_DOCKER_IMAGE_NAME`, … |
+
+Build and Dispatch workflow steps share the **same** secret set (all enabled environments). Trigger only controls which environments are deployed on push — not which secrets are injected.
 
 ---
 
@@ -1031,7 +1094,7 @@ Run `deployhub doctor` after any config change.
 | `deployhub clean` | Remove old local artifacts |
 | `deployhub update` | Check for CLI updates |
 
-**Tests:** `npm test` — currently **270 passing** across the Jest suites.
+**Tests:** `npm test` — currently **320 passing** across the Jest suites.
 
 ## GitHub Secrets
 

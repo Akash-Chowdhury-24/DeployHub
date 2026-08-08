@@ -1,8 +1,10 @@
 import fs from 'fs-extra';
 import path from 'path';
 import yaml from 'js-yaml';
+import chalk from 'chalk';
+import semver from 'semver';
 import { fileURLToPath } from 'url';
-import { getWorkflowHeaderComment } from './author.js';
+import { getWorkflowHeaderComment, getDeployHubVersion } from './author.js';
 import {
   generateDeploymentEnvSection,
   getDeploymentWorkflowSecretKeys,
@@ -144,28 +146,63 @@ export function getCliInstallSpec(cliSource) {
  * Version/range suitable as a package.json dependency VALUE for this CLI
  * (key is already NPM_PACKAGE — do not embed the package name again).
  *
+ * Reads the running CLI's package version dynamically. Never hardcode a
+ * specific semver fallback (e.g. "1.0.6") — if resolution fails, use "latest".
+ *
  * @param {string} [cliSource]
+ * @param {{ packageJsonPath?: string }} [opts] — test override: read this package.json
  * @returns {string}
  */
-export function getCliPackageJsonDependencyVersion(cliSource) {
+export function getCliPackageJsonDependencyVersion(cliSource, opts = {}) {
   const normalized = normalizeCliSource(cliSource);
   if (normalized === DEFAULT_NPM_CLI_SOURCE) {
-    try {
-      const pkgPath = path.join(
-        path.dirname(fileURLToPath(import.meta.url)),
-        '../../package.json'
-      );
-      const pkg = fs.readJsonSync(pkgPath);
-      if (typeof pkg.version === 'string' && pkg.version.trim()) {
-        return `^${pkg.version.trim()}`;
-      }
-    } catch {
-      // fall through
-    }
+    const resolved = readCliPackageVersion(opts.packageJsonPath);
+    if (resolved) return `^${resolved}`;
     return 'latest';
   }
   // github: / file: specs are valid package.json dependency values as-is
   return getCliInstallSpec(cliSource);
+}
+
+/**
+ * Resolve the running CLI package version for dependency ranges.
+ * Order: explicit package.json path (tests) → package.json next to this
+ * package root → getDeployHubVersion() (covers __DEPLOYHUB_VERSION__ in
+ * pkg binaries). Never returns a hardcoded stale semver.
+ *
+ * @param {string} [packageJsonPath]
+ * @returns {string|null}
+ */
+function readCliPackageVersion(packageJsonPath) {
+  const candidates = [];
+  if (packageJsonPath) {
+    candidates.push(packageJsonPath);
+  } else {
+    candidates.push(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), '../../package.json')
+    );
+  }
+
+  for (const pkgPath of candidates) {
+    try {
+      const pkg = fs.readJsonSync(pkgPath);
+      if (typeof pkg.version === 'string' && /^\d+\.\d+\.\d+/.test(pkg.version.trim())) {
+        return pkg.version.trim();
+      }
+    } catch {
+      // try next
+    }
+  }
+
+  try {
+    const v = getDeployHubVersion();
+    if (typeof v === 'string' && /^\d+\.\d+\.\d+/.test(v.trim())) {
+      return v.trim();
+    }
+  } catch {
+    // ignore
+  }
+  return null;
 }
 
 /**
@@ -957,19 +994,132 @@ export async function getWorkflowDriftDoctorChecks(cwd, config) {
 }
 
 /**
+ * Extract a comparable base semver from a package.json dependency value
+ * (`^2.0.19`, `~2.0.19`, `2.0.19`). Returns null for `latest`, git URLs,
+ * or anything that is not a valid semver range/version.
+ *
+ * @param {unknown} value
+ * @returns {string|null}
+ */
+export function parseDependencyBaseVersion(value) {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  if (
+    trimmed === 'latest' ||
+    trimmed.startsWith('github:') ||
+    trimmed.startsWith('file:') ||
+    trimmed.startsWith('git+') ||
+    trimmed.includes('://')
+  ) {
+    return null;
+  }
+  const coerced = semver.coerce(trimmed);
+  return coerced ? coerced.version : null;
+}
+
+/**
+ * Decide whether to write a new DeployHub dependency version into a project
+ * package.json. Never allows a lower semver to overwrite a higher existing pin.
+ *
+ * @param {string|null|undefined} existingValue
+ * @param {string} proposedValue
+ * @returns {{ write: boolean, value: string, warning: string|null }}
+ */
+export function decideDeployhubDependencyVersionWrite(existingValue, proposedValue) {
+  const proposed = typeof proposedValue === 'string' ? proposedValue.trim() : '';
+  if (!proposed) {
+    return {
+      write: false,
+      value: typeof existingValue === 'string' ? existingValue : '',
+      warning:
+        '⚠ Skipped updating package.json dependency version: resolved DeployHub version was empty.',
+    };
+  }
+
+  if (existingValue == null || existingValue === '') {
+    return { write: true, value: proposed, warning: null };
+  }
+
+  const existingBase = parseDependencyBaseVersion(existingValue);
+  const proposedBase = parseDependencyBaseVersion(proposed);
+
+  if (!existingBase || !proposedBase) {
+    return {
+      write: false,
+      value: String(existingValue),
+      warning:
+        `⚠ Skipped updating package.json dependency version: could not compare ` +
+        `existing "${existingValue}" with resolved "${proposed}" as semver. ` +
+        `Leaving the existing entry untouched.`,
+    };
+  }
+
+  if (semver.lt(proposedBase, existingBase)) {
+    return {
+      write: false,
+      value: String(existingValue),
+      warning:
+        `⚠ Skipped updating package.json dependency version: the currently\n` +
+        `  resolved DeployHub CLI version (${proposedBase}) is lower than what's already\n` +
+        `  pinned (${existingBase}). Keeping the existing, newer version to avoid a\n` +
+        `  downgrade. If this is unexpected, check that you're running the\n` +
+        `  intended CLI version (which deployhub / npm ls -g @akash-chowdhury-24/deployhub).`,
+    };
+  }
+
+  // existing <= proposed → write (first-time already handled; upgrade or same)
+  return { write: true, value: proposed, warning: null };
+}
+
+/**
  * @param {string} cliSource
  * @param {string} [cwd]
+ * @param {{ packageJsonPath?: string, proposedVersion?: string }} [opts]
+ *        `proposedVersion` / `packageJsonPath` are for tests (mock resolved CLI version).
  */
-export async function addDeployhubToPackageJson(cliSource, cwd = process.cwd()) {
+export async function addDeployhubToPackageJson(cliSource, cwd = process.cwd(), opts = {}) {
   const pkgPath = path.join(cwd, 'package.json');
   if (!(await fs.pathExists(pkgPath))) return;
 
   const pkg = await fs.readJson(pkgPath);
   pkg.devDependencies = pkg.devDependencies || {};
+
+  const existingDev = pkg.devDependencies[NPM_PACKAGE];
+  const existingProd =
+    pkg.dependencies && typeof pkg.dependencies === 'object'
+      ? pkg.dependencies[NPM_PACKAGE]
+      : undefined;
+  const existing =
+    existingDev != null && existingDev !== ''
+      ? existingDev
+      : existingProd != null && existingProd !== ''
+        ? existingProd
+        : null;
+
   // package.json value must be a semver range / "latest" / git URL — never "name@version"
   // (that form is only for `npm install <spec>` via getCliInstallSpec).
-  pkg.devDependencies[NPM_PACKAGE] = getCliPackageJsonDependencyVersion(cliSource);
+  const proposed =
+    typeof opts.proposedVersion === 'string' && opts.proposedVersion.trim()
+      ? opts.proposedVersion.trim()
+      : getCliPackageJsonDependencyVersion(cliSource, opts);
+
+  const decision = decideDeployhubDependencyVersionWrite(existing, proposed);
+  if (decision.warning) {
+    console.log(chalk.yellow(decision.warning));
+  }
+  if (decision.write) {
+    // Prefer updating whichever field already held the entry; default to devDependencies.
+    if (existingProd != null && existingProd !== '' && (existingDev == null || existingDev === '')) {
+      pkg.dependencies = pkg.dependencies || {};
+      pkg.dependencies[NPM_PACKAGE] = decision.value;
+    } else {
+      pkg.devDependencies[NPM_PACKAGE] = decision.value;
+    }
+  }
+
   delete pkg.devDependencies.deployhub;
+  if (pkg.dependencies) delete pkg.dependencies.deployhub;
   pkg.scripts = pkg.scripts || {};
   pkg.scripts['deployhub:build'] = 'deployhub build';
   await fs.writeJson(pkgPath, pkg, { spaces: 2 });

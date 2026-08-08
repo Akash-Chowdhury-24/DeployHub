@@ -5,6 +5,8 @@ import {
   addDeployhubToPackageJson,
   getCliPackageJsonDependencyVersion,
   getCliInstallSpec,
+  decideDeployhubDependencyVersionWrite,
+  parseDependencyBaseVersion,
   DEFAULT_NPM_CLI_SOURCE,
 } from '../src/utils/github-actions.js';
 import {
@@ -18,6 +20,10 @@ const PKG = '@akash-chowdhury-24/deployhub';
 describe('addDeployhubToPackageJson dependency version', () => {
   /** @type {string} */
   let tmp;
+  /** @type {typeof console.log} */
+  let originalLog;
+  /** @type {string[]} */
+  let logs;
 
   beforeEach(async () => {
     tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'dh-pkg-dep-'));
@@ -25,9 +31,15 @@ describe('addDeployhubToPackageJson dependency version', () => {
       name: 'demo-app',
       version: '0.0.1',
     });
+    logs = [];
+    originalLog = console.log;
+    console.log = (...args) => {
+      logs.push(args.map(String).join(' '));
+    };
   });
 
   afterEach(async () => {
+    console.log = originalLog;
     await fs.remove(tmp);
   });
 
@@ -51,11 +63,194 @@ describe('addDeployhubToPackageJson dependency version', () => {
     expect(depValue).not.toContain(PKG);
   });
 
+  test('reads ^2.0.18 from a real package.json with version 2.0.18 (not a hardcoded stale value)', async () => {
+    const pkgPath = path.join(tmp, 'cli-package-2.0.18.json');
+    await fs.writeJson(pkgPath, {
+      name: '@akash-chowdhury-24/deployhub',
+      version: '2.0.18',
+    });
+    expect(
+      getCliPackageJsonDependencyVersion(DEFAULT_NPM_CLI_SOURCE, {
+        packageJsonPath: pkgPath,
+      })
+    ).toBe('^2.0.18');
+  });
+
+  test('reads ^3.1.0 dynamically from a different package.json version (proves no hardcoded fixture)', async () => {
+    const pkgPath = path.join(tmp, 'cli-package-3.1.0.json');
+    await fs.writeJson(pkgPath, {
+      name: '@akash-chowdhury-24/deployhub',
+      version: '3.1.0',
+    });
+    expect(
+      getCliPackageJsonDependencyVersion(DEFAULT_NPM_CLI_SOURCE, {
+        packageJsonPath: pkgPath,
+      })
+    ).toBe('^3.1.0');
+    // Must not accidentally return the other fixture or the old repo skew 1.0.6
+    expect(
+      getCliPackageJsonDependencyVersion(DEFAULT_NPM_CLI_SOURCE, {
+        packageJsonPath: pkgPath,
+      })
+    ).not.toBe('^1.0.6');
+    expect(
+      getCliPackageJsonDependencyVersion(DEFAULT_NPM_CLI_SOURCE, {
+        packageJsonPath: pkgPath,
+      })
+    ).not.toBe('^2.0.18');
+  });
+
+  test('falls back to "latest" when package.json is unreadable — never a hardcoded old semver', async () => {
+    expect(
+      getCliPackageJsonDependencyVersion(DEFAULT_NPM_CLI_SOURCE, {
+        packageJsonPath: path.join(tmp, 'does-not-exist.json'),
+      })
+    ).toMatch(/^(latest|\^\d+\.\d+\.\d+)/);
+    // If fallback path is hit exclusively (unreadable + getDeployHubVersion fails),
+    // the only non-semver answer allowed is "latest". When getDeployHubVersion works
+    // from the live package, a ^range is also fine — never ^1.0.6 specifically from a
+    // hardcoded constant (there is none).
+    const v = getCliPackageJsonDependencyVersion(DEFAULT_NPM_CLI_SOURCE, {
+      packageJsonPath: path.join(tmp, 'missing.json'),
+    });
+    expect(v).not.toBe('^1.0.6');
+  });
+
   test('github cli source keeps a valid git dependency value without double-wrapping', async () => {
     const src = 'github:Akash-Chowdhury-24/DeployHub';
     await addDeployhubToPackageJson(src, tmp);
     const pkg = await fs.readJson(path.join(tmp, 'package.json'));
     expect(pkg.devDependencies[PKG]).toBe(src);
+  });
+});
+
+describe('downgrade-safe DeployHub dependency writes', () => {
+  /** @type {string} */
+  let tmp;
+  /** @type {typeof console.log} */
+  let originalLog;
+  /** @type {string[]} */
+  let logs;
+
+  beforeEach(async () => {
+    tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'dh-pkg-guard-'));
+    logs = [];
+    originalLog = console.log;
+    console.log = (...args) => {
+      logs.push(args.map(String).join(' '));
+    };
+  });
+
+  afterEach(async () => {
+    console.log = originalLog;
+    await fs.remove(tmp);
+  });
+
+  test('existing ^2.0.19 + resolved 1.0.6 → does NOT overwrite; prints downgrade warning', async () => {
+    await fs.writeJson(path.join(tmp, 'package.json'), {
+      name: 'demo-app',
+      version: '0.0.1',
+      devDependencies: { [PKG]: '^2.0.19' },
+    });
+
+    await addDeployhubToPackageJson(DEFAULT_NPM_CLI_SOURCE, tmp, {
+      proposedVersion: '^1.0.6',
+    });
+
+    const pkg = await fs.readJson(path.join(tmp, 'package.json'));
+    expect(pkg.devDependencies[PKG]).toBe('^2.0.19');
+    expect(logs.join('\n')).toMatch(/Skipped updating package\.json dependency version/);
+    expect(logs.join('\n')).toMatch(/1\.0\.6/);
+    expect(logs.join('\n')).toMatch(/2\.0\.19/);
+  });
+
+  test('existing ^2.0.19 + resolved 2.0.20 → upgrades to ^2.0.20', async () => {
+    await fs.writeJson(path.join(tmp, 'package.json'), {
+      name: 'demo-app',
+      version: '0.0.1',
+      devDependencies: { [PKG]: '^2.0.19' },
+    });
+
+    await addDeployhubToPackageJson(DEFAULT_NPM_CLI_SOURCE, tmp, {
+      proposedVersion: '^2.0.20',
+    });
+
+    const pkg = await fs.readJson(path.join(tmp, 'package.json'));
+    expect(pkg.devDependencies[PKG]).toBe('^2.0.20');
+    expect(logs.join('\n')).not.toMatch(/Skipped updating/);
+  });
+
+  test('no existing entry + resolved 2.0.19 → writes ^2.0.19 (first-time)', async () => {
+    await fs.writeJson(path.join(tmp, 'package.json'), {
+      name: 'demo-app',
+      version: '0.0.1',
+    });
+
+    await addDeployhubToPackageJson(DEFAULT_NPM_CLI_SOURCE, tmp, {
+      proposedVersion: '^2.0.19',
+    });
+
+    const pkg = await fs.readJson(path.join(tmp, 'package.json'));
+    expect(pkg.devDependencies[PKG]).toBe('^2.0.19');
+  });
+
+  test('malformed existing value → no overwrite, warning, no crash', async () => {
+    await fs.writeJson(path.join(tmp, 'package.json'), {
+      name: 'demo-app',
+      version: '0.0.1',
+      devDependencies: { [PKG]: 'not-a-valid-semver!!!' },
+    });
+
+    await addDeployhubToPackageJson(DEFAULT_NPM_CLI_SOURCE, tmp, {
+      proposedVersion: '^2.0.19',
+    });
+
+    const pkg = await fs.readJson(path.join(tmp, 'package.json'));
+    expect(pkg.devDependencies[PKG]).toBe('not-a-valid-semver!!!');
+    expect(logs.join('\n')).toMatch(/could not compare|Skipped updating/);
+  });
+
+  test('init re-run still allowed: upgrades when newer, never downgrades (scripts always ensured)', async () => {
+    // Judgment: re-run of init MAY update the pin on upgrade, but the downgrade
+    // guard makes re-runs safe — we do not "write once only".
+    await fs.writeJson(path.join(tmp, 'package.json'), {
+      name: 'demo-app',
+      version: '0.0.1',
+      devDependencies: { [PKG]: '^2.0.18' },
+    });
+
+    await addDeployhubToPackageJson(DEFAULT_NPM_CLI_SOURCE, tmp, {
+      proposedVersion: '^2.0.19',
+    });
+    let pkg = await fs.readJson(path.join(tmp, 'package.json'));
+    expect(pkg.devDependencies[PKG]).toBe('^2.0.19');
+    expect(pkg.scripts['deployhub:build']).toBe('deployhub build');
+
+    delete pkg.scripts;
+    await fs.writeJson(path.join(tmp, 'package.json'), pkg);
+    await addDeployhubToPackageJson(DEFAULT_NPM_CLI_SOURCE, tmp, {
+      proposedVersion: '^1.0.6',
+    });
+    pkg = await fs.readJson(path.join(tmp, 'package.json'));
+    expect(pkg.devDependencies[PKG]).toBe('^2.0.19');
+    expect(pkg.scripts['deployhub:build']).toBe('deployhub build');
+    expect(logs.join('\n')).toMatch(/lower than what's already/);
+  });
+
+  test('decideDeployhubDependencyVersionWrite / parseDependencyBaseVersion unit cases', () => {
+    expect(parseDependencyBaseVersion('^2.0.19')).toBe('2.0.19');
+    expect(parseDependencyBaseVersion('latest')).toBeNull();
+    expect(decideDeployhubDependencyVersionWrite(null, '^2.0.19')).toEqual({
+      write: true,
+      value: '^2.0.19',
+      warning: null,
+    });
+    expect(decideDeployhubDependencyVersionWrite('^2.0.19', '^1.0.6').write).toBe(
+      false
+    );
+    expect(decideDeployhubDependencyVersionWrite('^2.0.19', '^2.0.20').value).toBe(
+      '^2.0.20'
+    );
   });
 });
 
