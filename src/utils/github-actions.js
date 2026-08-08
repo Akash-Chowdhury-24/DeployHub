@@ -14,7 +14,11 @@ import {
   envUsesPrefixedSecrets,
   DEPLOYMENT_ENV_KEYS,
 } from '../deployment/deployment-env.js';
-import { getEnvMethod, getEnvTrigger, isEnvEnabled } from '../core/environments.js';
+import {
+  getEnvMethod,
+  getEnabledEnvironmentNames,
+  isEnvEnabled,
+} from '../core/environments.js';
 
 /** @typedef {'aws'|'azure'|'gcp'|'gdrive'|'dropbox'|'local'|'ftp'|'ssh'} ProviderEnvKey */
 
@@ -259,9 +263,41 @@ function hasKubernetesDeploy(deployEnvironments, environments) {
 }
 
 /**
+ * Secret name for the Configure-kubeconfig setup step.
+ * Must match the env that actually uses kubernetes — when the only k8s env is
+ * non-grandfathered (e.g. production), that is PRODUCTION_KUBECONFIG, not the
+ * unprefixed KUBECONFIG (which would never be injected and leave the file empty).
+ *
+ * LIMITATION (follow-up): GitHub Actions writes exactly ONE kubeconfig file per
+ * job. Multiple Kubernetes environments that target DIFFERENT clusters in the
+ * same workflow run are not yet fully supported — only the first/grandfathered
+ * k8s env's secret is used for the setup step. Track as a product follow-up
+ * before advertising multi-cluster multi-env CI.
+ *
+ * @param {string[]} deployEnvironments
+ * @param {Record<string, { type?: string, method?: string }>} environments
+ * @param {import('../core/config.js').DeployHubConfig|null} config
  * @returns {string}
  */
-function getKubernetesSetupSteps() {
+function resolveKubeconfigWorkflowSecretName(deployEnvironments, environments, config) {
+  const cfg = { ...(config || {}), environments };
+  const k8sNames = deployEnvironments.filter(
+    (n) => getEnvMethod(environments[n]) === 'kubernetes'
+  );
+  if (k8sNames.length === 0) return 'KUBECONFIG';
+  const unprefixed = k8sNames.find((n) => !envUsesPrefixedSecrets(n, cfg));
+  const chosen = unprefixed || k8sNames[0];
+  return envUsesPrefixedSecrets(chosen, cfg)
+    ? prefixSecretKey(chosen, 'KUBECONFIG')
+    : 'KUBECONFIG';
+}
+
+/**
+ * @param {string} [kubeconfigSecretName]
+ * @returns {string}
+ */
+function getKubernetesSetupSteps(kubeconfigSecretName = 'KUBECONFIG') {
+  // One kubeconfig file per job — see resolveKubeconfigWorkflowSecretName LIMITATION.
   return `      - name: Setup kubectl
         uses: azure/setup-kubectl@v4
         with:
@@ -269,7 +305,7 @@ function getKubernetesSetupSteps() {
 
       - name: Configure kubeconfig
         env:
-          KUBECONFIG_SECRET: \${{ secrets.KUBECONFIG }}
+          KUBECONFIG_SECRET: \${{ secrets.${kubeconfigSecretName} }}
         run: |
           mkdir -p "$GITHUB_WORKSPACE/.kube"
           if echo "$KUBECONFIG_SECRET" | base64 -d > "$GITHUB_WORKSPACE/.kube/config" 2>/dev/null; then
@@ -314,27 +350,6 @@ function upsertWorkflowEnvLine(envVars, lhs, valueExpr) {
     }
   }
   envVars.add(`${linePrefix}${valueExpr}`);
-}
-
-/**
- * Enabled environment names from the live `environments` map (preferred over
- * a possibly-stale `deploy[]` argument passed into workflow generators).
- * @param {Record<string, { type?: string, method?: string }>} environments
- * @returns {string[]}
- */
-function listEnabledEnvironmentNames(environments) {
-  return Object.keys(environments || {}).filter((n) => isEnvEnabled(environments[n]));
-}
-
-/**
- * Push-triggered enabled envs — same set `pipelineDeployTargets` deploys in GHA.
- * @param {Record<string, { type?: string, method?: string }>} environments
- * @returns {string[]}
- */
-function listPushEnvironmentNames(environments) {
-  return listEnabledEnvironmentNames(environments).filter(
-    (n) => getEnvTrigger(environments[n]) === 'push'
-  );
 }
 
 /**
@@ -400,9 +415,8 @@ export function buildWorkflowEnvEntries(
  * @returns {string}
  */
 function formatEnvironmentChoiceOptions(environments) {
-  const names = Object.keys(environments || {}).filter((n) =>
-    isEnvEnabled(environments[n])
-  );
+  // Single source of truth: getEnabledEnvironmentNames (do not re-filter here).
+  const names = getEnabledEnvironmentNames({ environments });
   const options = [...names, 'all'];
   return options.map((n) => `          - ${n}`).join('\n');
 }
@@ -457,11 +471,10 @@ export function generateWorkflowYaml(
   config = null
 ) {
   const envNames = Object.keys(environments || {});
-  // Secret injection must follow live environments (same as pipelineDeployTargets),
-  // not a possibly-stale deploy[] argument — otherwise push-deployed envs missing
-  // from deploy[] get no secrets in the job env block.
-  const enabledEnvs = listEnabledEnvironmentNames(environments);
-  const pushEnvs = listPushEnvironmentNames(environments);
+  // Secret injection uses ALL enabled environments (not push-only / pipelineDeployTargets).
+  // Prefer live enabled names over a possibly-stale deploy[] argument so no enabled
+  // env is missing from the job env block. Canonical helper: getEnabledEnvironmentNames.
+  const enabledEnvs = getEnabledEnvironmentNames({ ...(config || {}), environments });
   const allDeployNames =
     enabledEnvs.length > 0
       ? enabledEnvs
@@ -469,28 +482,21 @@ export function generateWorkflowYaml(
         ? deployEnvironments
         : envNames;
 
-  // Build step: union of secrets for every push-triggered env (build deploys all of them).
-  const buildSecretEnvs =
-    pushEnvs.length > 0 ? pushEnvs : allDeployNames.slice(0, 1);
+  // CRITICAL: Build and Deploy (workflow_dispatch) MUST share the same secret union —
+  // every enabled environment. Filtering Build to push-only caused a live regression:
+  // Dispatch correctly got PRODUCTION_* while Build did not, so `deployhub build`'s
+  // push deploy stage failed on production with a missing SSH key. Trigger only
+  // controls which envs the CLI deploys; it must not control which secrets are injected.
+  const secretEnvs =
+    allDeployNames.length > 0 ? allDeployNames : envNames.slice(0, 1);
 
-  // workflow_dispatch step: union for ALL enabled envs (dropdown can pick any / all).
-  const dispatchSecretEnvs = allDeployNames;
-
-  const buildEnvVars = buildWorkflowEnvEntries(
+  const envVars = buildWorkflowEnvEntries(
     storageProviders,
-    buildSecretEnvs,
+    secretEnvs,
     environments,
     config
   );
-  const buildEnvBlock = formatWorkflowEnvBlock(buildEnvVars);
-
-  const dispatchEnvVars = buildWorkflowEnvEntries(
-    storageProviders,
-    dispatchSecretEnvs,
-    environments,
-    config
-  );
-  const dispatchEnvBlock = formatWorkflowEnvBlock(dispatchEnvVars);
+  const envBlock = formatWorkflowEnvBlock(envVars);
 
   const installSpec = getCliInstallSpec(cliSource);
   const backendSteps = getBackendSetupSteps(config);
@@ -498,8 +504,13 @@ export function generateWorkflowYaml(
   const githubGitConfigStep = isGithubCliSource(cliSource)
     ? `${getGithubGitConfigStep()}\n`
     : '';
+  const kubeconfigSecret = resolveKubeconfigWorkflowSecretName(
+    allDeployNames,
+    environments,
+    config
+  );
   const kubernetesSteps = hasKubernetesDeploy(allDeployNames, environments)
-    ? `${getKubernetesSetupSteps()}\n`
+    ? `${getKubernetesSetupSteps(kubeconfigSecret)}\n`
     : '';
 
   const projectType = config?.projectType || 'frontend';
@@ -527,7 +538,7 @@ ${envChoiceOptions}
     ? `      - name: Deploy (workflow_dispatch)
         if: github.event_name == 'workflow_dispatch'
         env:
-${dispatchEnvBlock}
+${envBlock}
         run: |
           ENV_INPUT="\${{ inputs.environment }}"
           if [ -z "$ENV_INPUT" ] || [ "$ENV_INPUT" = "all" ]; then
@@ -557,7 +568,7 @@ ${kubernetesSteps}${githubGitConfigStep}      - name: Install project dependenci
       - name: Build (and auto-deploy push-triggered envs)
         run: ${getCliBuildCommand()}
         env:
-${buildEnvBlock}
+${envBlock}
 ${manualDeployStep}`;
 
   return workflow;
@@ -589,7 +600,7 @@ export function generateRollbackWorkflowYaml(
   config = null
 ) {
   const envNames = Object.keys(environments || {});
-  const enabledEnvs = listEnabledEnvironmentNames(environments);
+  const enabledEnvs = getEnabledEnvironmentNames({ ...(config || {}), environments });
   const allDeployNames =
     enabledEnvs.length > 0
       ? enabledEnvs
@@ -609,8 +620,13 @@ export function generateRollbackWorkflowYaml(
   const githubGitConfigStep = isGithubCliSource(cliSource)
     ? `${getGithubGitConfigStep()}\n`
     : '';
+  const kubeconfigSecret = resolveKubeconfigWorkflowSecretName(
+    allDeployNames,
+    environments,
+    config
+  );
   const kubernetesSteps = hasKubernetesDeploy(allDeployNames, environments)
-    ? `${getKubernetesSetupSteps()}\n`
+    ? `${getKubernetesSetupSteps(kubeconfigSecret)}\n`
     : '';
 
   const rollbackCmd = getCliRollbackCommand();
@@ -790,13 +806,14 @@ export function expectedWorkflowSecretKeysFromConfig(config, kind = 'rollback') 
   /** @type {string[]} */
   let targets;
   if (kind === 'deploy') {
-    const pushEnvs = listPushEnvironmentNames(environments);
-    const enabled = listEnabledEnvironmentNames(environments);
-    // Deploy workflow Build step uses push envs; doctor also flags dispatch-needed
-    // secrets by using the broader enabled set via kind === 'rollback' / checklist.
-    targets = pushEnvs.length > 0 ? pushEnvs : enabled.slice(0, 1);
+    const enabled = getEnabledEnvironmentNames({ ...config, environments });
+    // Same union as generateWorkflowYaml Build + dispatch steps (all enabled).
+    targets = enabled.length > 0 ? enabled : allNames.slice(0, 1);
   } else {
-    targets = allNames.length > 0 ? listEnabledEnvironmentNames(environments) : allNames;
+    targets =
+      allNames.length > 0
+        ? getEnabledEnvironmentNames({ ...config, environments })
+        : allNames;
     if (targets.length === 0) targets = allNames;
   }
 
@@ -851,7 +868,7 @@ export function detectWorkflowConfigDrift(yamlText, config, filename = DEPLOY_WO
     return { drifted: false, missingEnvs, missingSecrets, summary: '' };
   }
 
-  const envNames = listEnabledEnvironmentNames(config.environments || {});
+  const envNames = getEnabledEnvironmentNames(config);
   const root = /** @type {Record<string, any>} */ (parsed);
   const options = root?.on?.workflow_dispatch?.inputs?.environment?.options;
 

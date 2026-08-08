@@ -161,8 +161,13 @@ export function resolveDefaultEnvironmentName(config) {
 }
 
 /**
- * Enabled environment names (for `--env all` and pipeline defaults).
+ * Enabled environment names — **the single source of truth** for “which envs
+ * apply” across CLI, pipeline gating, workflow secret injection, and dropdowns.
+ * Do not add a parallel helper that re-filters `environments` by `enabled`
+ * (that shape caused Build/Dispatch secret asymmetry when lists drifted).
+ *
  * Falls back to legacy `deploy[]` when present and environments lack `enabled`.
+ * Used for `--env all` and pipeline defaults.
  *
  * @param {Record<string, unknown>} config
  * @returns {string[]}

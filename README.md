@@ -909,6 +909,8 @@ DeployHub detects whether the server uses Debian-style `sites-available` or RHEL
 - Cluster connectivity test during `init`
 - On deploy: registry login → reuse or build image → push (unique tag unless `DOCKER_IMAGE_TAG` is set) → ensure namespace exists (prompt locally / auto-create in CI) → `kubectl apply` → `kubectl set image` with the full resolved image ref → `kubectl rollout restart` when that ref is unchanged so pods pick up a new digest
 
+> **Limitation — multiple Kubernetes clusters:** A generated workflow writes **one** kubeconfig file per job. Multiple Kubernetes environments that target **different clusters** in the same workflow run are not yet fully supported (follow-up). Same-cluster multi-namespace / multi-env is fine.
+
 **After `init`:**
 1. Verify context: `kubectl config get-contexts`
 2. Copy `.env.example` → `.env`; set `DOCKER_IMAGE_NAME`, registry username/token, and (for local deploys) `KUBECONFIG` / `KUBE_CONTEXT` / `KUBE_NAMESPACE` as needed

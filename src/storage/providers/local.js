@@ -5,7 +5,11 @@ import path from 'path';
  * @param {Record<string, string>} [_env]
  */
 export function createLocalProvider(_env = process.env) {
-  const baseDir = path.join(process.cwd(), '.deployhub-storage');
+  // Tests / isolated runs may pin storage under a temp dir without process.chdir
+  // (chdir races when Jest runs suites in parallel).
+  const baseDir = _env.DEPLOYHUB_LOCAL_STORAGE_DIR
+    ? path.resolve(_env.DEPLOYHUB_LOCAL_STORAGE_DIR)
+    : path.join(process.cwd(), '.deployhub-storage');
 
   /**
    * @param {string} localPath

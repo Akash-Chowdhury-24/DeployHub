@@ -431,12 +431,16 @@ describe('F — workflow generation (3 envs)', () => {
       String(s.name || '').includes('workflow_dispatch')
     );
     expect(buildStep.env.SSH_HOST).toBe('${{ secrets.SSH_HOST }}');
-    // Build: push-triggered development only — no manual staging/production secrets.
-    expect(buildStep.env.STAGING_DOCKER_REGISTRY_USERNAME).toBeUndefined();
-    expect(buildStep.env.PRODUCTION_KUBECONFIG).toBeUndefined();
-    // Dispatch: union of ALL enabled envs (dropdown can select staging/production/all).
+    // Build and dispatch share one enabled-env secret union (no push-only Build filter).
+    expect(buildStep.env.STAGING_DOCKER_REGISTRY_USERNAME).toBe(
+      '${{ secrets.STAGING_DOCKER_REGISTRY_USERNAME }}'
+    );
+    expect(buildStep.env.PRODUCTION_KUBECONFIG).toBe('${{ secrets.PRODUCTION_KUBECONFIG }}');
     expect(dispatchStep.env.STAGING_DOCKER_REGISTRY_USERNAME).toBe(
       '${{ secrets.STAGING_DOCKER_REGISTRY_USERNAME }}'
+    );
+    expect(dispatchStep.env.PRODUCTION_KUBECONFIG).toBe(
+      buildStep.env.PRODUCTION_KUBECONFIG
     );
     expect(rollbackYaml).toContain('STAGING_');
     expect(rollbackYaml).toContain('PRODUCTION_');

@@ -24,11 +24,14 @@ import {
  * - GitHub Actions push: every enabled env with trigger "push".
  * - workflow_dispatch: none here (explicit deploy step handles --env).
  *
+ * Separate from workflow secret injection: CI may inject secrets for all
+ * enabled envs, but only `trigger: "push"` envs are deployed on push.
+ *
  * @param {import('./config.js').DeployHubConfig} config
  * @param {Record<string, string|undefined>} [env]
  * @returns {string[]}
  */
-function pipelineDeployTargets(config, env = process.env) {
+export function pipelineDeployTargets(config, env = process.env) {
   if (env.GITHUB_EVENT_NAME === 'workflow_dispatch') {
     return [];
   }

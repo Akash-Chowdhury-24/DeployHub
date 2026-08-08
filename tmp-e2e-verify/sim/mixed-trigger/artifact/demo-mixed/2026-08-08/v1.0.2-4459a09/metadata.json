@@ -1,0 +1,21 @@
+{
+  "project": "demo-mixed",
+  "version": "1.0.2",
+  "buildId": "1.0.2-4459a09",
+  "timestamp": "2026-08-08T06:34:59.544Z",
+  "gitCommit": "4459a09",
+  "branch": "main",
+  "environment": "production",
+  "projectType": "frontend",
+  "framework": "react",
+  "buildOutput": "dist",
+  "startCommand": null,
+  "port": 3000,
+  "generatedBy": {
+    "tool": "DeployHub",
+    "version": "1.0.6",
+    "author": "Akash Chowdhury",
+    "email": "akashbumbac24@gmail.com",
+    "linkedin": "https://www.linkedin.com/in/akash-chowdhury-12141a222/"
+  }
+}

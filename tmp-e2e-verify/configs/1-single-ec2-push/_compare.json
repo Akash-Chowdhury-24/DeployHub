@@ -1,0 +1,51 @@
+{
+  "name": "1-single-ec2-push",
+  "enabledEnvs": [
+    "production"
+  ],
+  "pushTargets": [
+    "production"
+  ],
+  "dispatchTargets": [],
+  "buildEqDispatch": true,
+  "rollbackMatchesDeployScope": true,
+  "buildKeys": [
+    "AWS_ACCESS_KEY_ID",
+    "AWS_REGION",
+    "AWS_SECRET_ACCESS_KEY",
+    "DEPLOYHUB_ENV",
+    "EC2_INSTANCE_ID",
+    "SSH_DEPLOY_PATH",
+    "SSH_HOST",
+    "SSH_KEY",
+    "SSH_SSH_PORT",
+    "SSH_USER"
+  ],
+  "dispatchKeys": [
+    "AWS_ACCESS_KEY_ID",
+    "AWS_REGION",
+    "AWS_SECRET_ACCESS_KEY",
+    "DEPLOYHUB_ENV",
+    "EC2_INSTANCE_ID",
+    "SSH_DEPLOY_PATH",
+    "SSH_HOST",
+    "SSH_KEY",
+    "SSH_SSH_PORT",
+    "SSH_USER"
+  ],
+  "rollbackKeys": [
+    "AWS_ACCESS_KEY_ID",
+    "AWS_REGION",
+    "AWS_SECRET_ACCESS_KEY",
+    "DEPLOYHUB_ENV",
+    "EC2_INSTANCE_ID",
+    "SSH_DEPLOY_PATH",
+    "SSH_HOST",
+    "SSH_KEY",
+    "SSH_SSH_PORT",
+    "SSH_USER"
+  ],
+  "buildEnvBlock": "          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}\n          AWS_REGION: ${{ secrets.AWS_REGION }}\n          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}\n          DEPLOYHUB_ENV: production\n          EC2_INSTANCE_ID: ${{ secrets.EC2_INSTANCE_ID }}\n          SSH_DEPLOY_PATH: ${{ secrets.SSH_DEPLOY_PATH }}\n          SSH_HOST: ${{ secrets.SSH_HOST }}\n          SSH_KEY: ${{ secrets.SSH_KEY }}\n          SSH_SSH_PORT: ${{ secrets.SSH_SSH_PORT }}\n          SSH_USER: ${{ secrets.SSH_USER }}",
+  "dispatchEnvBlock": "          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}\n          AWS_REGION: ${{ secrets.AWS_REGION }}\n          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}\n          DEPLOYHUB_ENV: production\n          EC2_INSTANCE_ID: ${{ secrets.EC2_INSTANCE_ID }}\n          SSH_DEPLOY_PATH: ${{ secrets.SSH_DEPLOY_PATH }}\n          SSH_HOST: ${{ secrets.SSH_HOST }}\n          SSH_KEY: ${{ secrets.SSH_KEY }}\n          SSH_SSH_PORT: ${{ secrets.SSH_SSH_PORT }}\n          SSH_USER: ${{ secrets.SSH_USER }}",
+  "rollbackEnvBlock": "          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}\n          AWS_REGION: ${{ secrets.AWS_REGION }}\n          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}\n          DEPLOYHUB_ENV: production\n          EC2_INSTANCE_ID: ${{ secrets.EC2_INSTANCE_ID }}\n          SSH_DEPLOY_PATH: ${{ secrets.SSH_DEPLOY_PATH }}\n          SSH_HOST: ${{ secrets.SSH_HOST }}\n          SSH_KEY: ${{ secrets.SSH_KEY }}\n          SSH_SSH_PORT: ${{ secrets.SSH_SSH_PORT }}\n          SSH_USER: ${{ secrets.SSH_USER }}"
+}

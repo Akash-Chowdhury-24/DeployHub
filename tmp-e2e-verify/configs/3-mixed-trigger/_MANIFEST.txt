@@ -1,0 +1,72 @@
+CONFIG: 3-mixed-trigger
+enabledEnvs: ["development","production"]
+pipelineDeployTargets(push): ["development"]
+pipelineDeployTargets(workflow_dispatch): []
+Build===Dispatch secret sets: true
+Rollback secrets match Deploy Build scope: true
+
+=== BUILD env block ===
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_BUCKET: ${{ secrets.AWS_BUCKET }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          DEPLOYHUB_ENV: development
+          EC2_INSTANCE_ID: ${{ secrets.EC2_INSTANCE_ID }}
+          PRODUCTION_AWS_ACCESS_KEY_ID: ${{ secrets.PRODUCTION_AWS_ACCESS_KEY_ID }}
+          PRODUCTION_AWS_REGION: ${{ secrets.PRODUCTION_AWS_REGION }}
+          PRODUCTION_AWS_SECRET_ACCESS_KEY: ${{ secrets.PRODUCTION_AWS_SECRET_ACCESS_KEY }}
+          PRODUCTION_EC2_INSTANCE_ID: ${{ secrets.PRODUCTION_EC2_INSTANCE_ID }}
+          PRODUCTION_SSH_DEPLOY_PATH: ${{ secrets.PRODUCTION_SSH_DEPLOY_PATH }}
+          PRODUCTION_SSH_HOST: ${{ secrets.PRODUCTION_SSH_HOST }}
+          PRODUCTION_SSH_KEY: ${{ secrets.PRODUCTION_SSH_KEY }}
+          PRODUCTION_SSH_SSH_PORT: ${{ secrets.PRODUCTION_SSH_SSH_PORT }}
+          PRODUCTION_SSH_USER: ${{ secrets.PRODUCTION_SSH_USER }}
+          SSH_DEPLOY_PATH: ${{ secrets.SSH_DEPLOY_PATH }}
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_KEY: ${{ secrets.SSH_KEY }}
+          SSH_SSH_PORT: ${{ secrets.SSH_SSH_PORT }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+
+=== DISPATCH env block ===
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_BUCKET: ${{ secrets.AWS_BUCKET }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          DEPLOYHUB_ENV: development
+          EC2_INSTANCE_ID: ${{ secrets.EC2_INSTANCE_ID }}
+          PRODUCTION_AWS_ACCESS_KEY_ID: ${{ secrets.PRODUCTION_AWS_ACCESS_KEY_ID }}
+          PRODUCTION_AWS_REGION: ${{ secrets.PRODUCTION_AWS_REGION }}
+          PRODUCTION_AWS_SECRET_ACCESS_KEY: ${{ secrets.PRODUCTION_AWS_SECRET_ACCESS_KEY }}
+          PRODUCTION_EC2_INSTANCE_ID: ${{ secrets.PRODUCTION_EC2_INSTANCE_ID }}
+          PRODUCTION_SSH_DEPLOY_PATH: ${{ secrets.PRODUCTION_SSH_DEPLOY_PATH }}
+          PRODUCTION_SSH_HOST: ${{ secrets.PRODUCTION_SSH_HOST }}
+          PRODUCTION_SSH_KEY: ${{ secrets.PRODUCTION_SSH_KEY }}
+          PRODUCTION_SSH_SSH_PORT: ${{ secrets.PRODUCTION_SSH_SSH_PORT }}
+          PRODUCTION_SSH_USER: ${{ secrets.PRODUCTION_SSH_USER }}
+          SSH_DEPLOY_PATH: ${{ secrets.SSH_DEPLOY_PATH }}
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_KEY: ${{ secrets.SSH_KEY }}
+          SSH_SSH_PORT: ${{ secrets.SSH_SSH_PORT }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+
+=== ROLLBACK env block ===
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_BUCKET: ${{ secrets.AWS_BUCKET }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          DEPLOYHUB_ENV: development
+          EC2_INSTANCE_ID: ${{ secrets.EC2_INSTANCE_ID }}
+          PRODUCTION_AWS_ACCESS_KEY_ID: ${{ secrets.PRODUCTION_AWS_ACCESS_KEY_ID }}
+          PRODUCTION_AWS_REGION: ${{ secrets.PRODUCTION_AWS_REGION }}
+          PRODUCTION_AWS_SECRET_ACCESS_KEY: ${{ secrets.PRODUCTION_AWS_SECRET_ACCESS_KEY }}
+          PRODUCTION_EC2_INSTANCE_ID: ${{ secrets.PRODUCTION_EC2_INSTANCE_ID }}
+          PRODUCTION_SSH_DEPLOY_PATH: ${{ secrets.PRODUCTION_SSH_DEPLOY_PATH }}
+          PRODUCTION_SSH_HOST: ${{ secrets.PRODUCTION_SSH_HOST }}
+          PRODUCTION_SSH_KEY: ${{ secrets.PRODUCTION_SSH_KEY }}
+          PRODUCTION_SSH_SSH_PORT: ${{ secrets.PRODUCTION_SSH_SSH_PORT }}
+          PRODUCTION_SSH_USER: ${{ secrets.PRODUCTION_SSH_USER }}
+          SSH_DEPLOY_PATH: ${{ secrets.SSH_DEPLOY_PATH }}
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_KEY: ${{ secrets.SSH_KEY }}
+          SSH_SSH_PORT: ${{ secrets.SSH_SSH_PORT }}
+          SSH_USER: ${{ secrets.SSH_USER }}

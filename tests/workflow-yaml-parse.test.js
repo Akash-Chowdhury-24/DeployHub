@@ -90,22 +90,19 @@ describe('generated workflow YAML parses with js-yaml', () => {
     );
     expect(options).toHaveLength(4);
 
-    // Build step: push-triggered envs only (development here).
+    // Build and dispatch share the same enabled-env secret union (trigger does not
+    // filter secrets — that split caused live Build-step PRODUCTION_* gaps).
     const buildEnv = stepEnv(parsed, 'Build');
-    const pushSecrets = expectedSecretKeysForEnvs(['development']);
-    for (const key of pushSecrets) {
-      expect(buildEnv[key]).toBe(`\${{ secrets.${key} }}`);
-    }
-    // Manual-only env secrets must NOT appear on the Build step.
-    expect(buildEnv.STAGING_DOCKER_IMAGE_NAME).toBeUndefined();
-    expect(buildEnv.PRODUCTION_KUBECONFIG).toBeUndefined();
-
-    // workflow_dispatch step: union of ALL enabled envs (dropdown can pick any / all).
     const dispatchEnv = stepEnv(parsed, 'workflow_dispatch');
     const allSecrets = expectedSecretKeysForEnvs(deployEnvs);
     for (const key of allSecrets) {
+      expect(buildEnv[key]).toBe(`\${{ secrets.${key} }}`);
       expect(dispatchEnv[key]).toBe(`\${{ secrets.${key} }}`);
     }
+    expect(buildEnv.STAGING_DOCKER_IMAGE_NAME).toBe(
+      '${{ secrets.STAGING_DOCKER_IMAGE_NAME }}'
+    );
+    expect(buildEnv.PRODUCTION_KUBECONFIG).toBe('${{ secrets.PRODUCTION_KUBECONFIG }}');
   });
 
   test('rollback workflow is valid YAML with jobs, env dropdown, and secret parity', () => {
@@ -216,6 +213,43 @@ describe('2× EC2/SSH push envs — Build step carries both secret sets (regress
     const buildEnv = stepEnv(parsed, 'Build');
     expect(buildEnv.SSH_KEY).toBe('${{ secrets.SSH_KEY }}');
     expect(buildEnv.PRODUCTION_SSH_KEY).toBe('${{ secrets.PRODUCTION_SSH_KEY }}');
+  });
+
+  test('REGRESSION: Build must match Dispatch for PRODUCTION_* even if production were manual', () => {
+    // The live bug: Dispatch had PRODUCTION_*; Build did not. Prior tests only used
+    // both-push fixtures, so a push-only Build filter still passed. This fixture
+    // uses production=manual — the OLD push-filtered Build would omit PRODUCTION_*
+    // while Dispatch included it. That asymmetry must never pass again.
+    const mixed = {
+      development: {
+        enabled: true,
+        method: 'ec2',
+        trigger: 'push',
+        config: { host: 'dev.example.com' },
+      },
+      production: {
+        enabled: true,
+        method: 'ec2',
+        trigger: 'manual',
+        config: { host: 'prod.example.com' },
+      },
+    };
+    const cfg = {
+      project: 'demo',
+      projectType: 'frontend',
+      defaultEnvironment: 'development',
+      unprefixedSecretEnvironment: 'development',
+      environments: mixed,
+    };
+    const text = generateWorkflowYaml(['aws'], ['development'], mixed, CLI, cfg);
+    const parsed = yaml.load(text);
+    const buildEnv = stepEnv(parsed, 'Build');
+    const dispatchEnv = stepEnv(parsed, 'workflow_dispatch');
+
+    expect(buildEnv.PRODUCTION_SSH_KEY).toBe('${{ secrets.PRODUCTION_SSH_KEY }}');
+    expect(dispatchEnv.PRODUCTION_SSH_KEY).toBe('${{ secrets.PRODUCTION_SSH_KEY }}');
+    expect(buildEnv.PRODUCTION_SSH_KEY).toBe(dispatchEnv.PRODUCTION_SSH_KEY);
+    expect(buildEnv.SSH_KEY).toBe('${{ secrets.SSH_KEY }}');
   });
 });
 

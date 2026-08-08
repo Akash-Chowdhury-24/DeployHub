@@ -1,0 +1,99 @@
+CONFIG: 4-three-methods-all-push
+enabledEnvs: ["development","staging","production"]
+pipelineDeployTargets(push): ["development","staging","production"]
+pipelineDeployTargets(workflow_dispatch): []
+Build===Dispatch secret sets: true
+Rollback secrets match Deploy Build scope: true
+
+=== BUILD env block ===
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_BUCKET: ${{ secrets.AWS_BUCKET }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          DEPLOYHUB_ENV: development
+          EC2_INSTANCE_ID: ${{ secrets.EC2_INSTANCE_ID }}
+          KUBECONFIG: ${{ github.workspace }}/.kube/config
+          PRODUCTION_DOCKER_IMAGE_NAME: ${{ secrets.PRODUCTION_DOCKER_IMAGE_NAME }}
+          PRODUCTION_DOCKER_IMAGE_TAG: ${{ secrets.PRODUCTION_DOCKER_IMAGE_TAG }}
+          PRODUCTION_DOCKER_REGISTRY_TOKEN: ${{ secrets.PRODUCTION_DOCKER_REGISTRY_TOKEN }}
+          PRODUCTION_DOCKER_REGISTRY_URL: ${{ secrets.PRODUCTION_DOCKER_REGISTRY_URL }}
+          PRODUCTION_DOCKER_REGISTRY_USERNAME: ${{ secrets.PRODUCTION_DOCKER_REGISTRY_USERNAME }}
+          PRODUCTION_KUBECONFIG: ${{ secrets.PRODUCTION_KUBECONFIG }}
+          PRODUCTION_KUBE_CONTEXT: ${{ secrets.PRODUCTION_KUBE_CONTEXT }}
+          PRODUCTION_KUBE_IMAGE_PULL_SECRET: ${{ secrets.PRODUCTION_KUBE_IMAGE_PULL_SECRET }}
+          PRODUCTION_KUBE_NAMESPACE: ${{ secrets.PRODUCTION_KUBE_NAMESPACE }}
+          SSH_DEPLOY_PATH: ${{ secrets.SSH_DEPLOY_PATH }}
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_KEY: ${{ secrets.SSH_KEY }}
+          SSH_SSH_PORT: ${{ secrets.SSH_SSH_PORT }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          STAGING_DOCKER_CERT_PATH: ${{ secrets.STAGING_DOCKER_CERT_PATH }}
+          STAGING_DOCKER_HOST: ${{ secrets.STAGING_DOCKER_HOST }}
+          STAGING_DOCKER_IMAGE_NAME: ${{ secrets.STAGING_DOCKER_IMAGE_NAME }}
+          STAGING_DOCKER_IMAGE_TAG: ${{ secrets.STAGING_DOCKER_IMAGE_TAG }}
+          STAGING_DOCKER_REGISTRY_TOKEN: ${{ secrets.STAGING_DOCKER_REGISTRY_TOKEN }}
+          STAGING_DOCKER_REGISTRY_URL: ${{ secrets.STAGING_DOCKER_REGISTRY_URL }}
+          STAGING_DOCKER_REGISTRY_USERNAME: ${{ secrets.STAGING_DOCKER_REGISTRY_USERNAME }}
+          STAGING_DOCKER_TLS_VERIFY: ${{ secrets.STAGING_DOCKER_TLS_VERIFY }}
+
+=== DISPATCH env block ===
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_BUCKET: ${{ secrets.AWS_BUCKET }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          DEPLOYHUB_ENV: development
+          EC2_INSTANCE_ID: ${{ secrets.EC2_INSTANCE_ID }}
+          KUBECONFIG: ${{ github.workspace }}/.kube/config
+          PRODUCTION_DOCKER_IMAGE_NAME: ${{ secrets.PRODUCTION_DOCKER_IMAGE_NAME }}
+          PRODUCTION_DOCKER_IMAGE_TAG: ${{ secrets.PRODUCTION_DOCKER_IMAGE_TAG }}
+          PRODUCTION_DOCKER_REGISTRY_TOKEN: ${{ secrets.PRODUCTION_DOCKER_REGISTRY_TOKEN }}
+          PRODUCTION_DOCKER_REGISTRY_URL: ${{ secrets.PRODUCTION_DOCKER_REGISTRY_URL }}
+          PRODUCTION_DOCKER_REGISTRY_USERNAME: ${{ secrets.PRODUCTION_DOCKER_REGISTRY_USERNAME }}
+          PRODUCTION_KUBECONFIG: ${{ secrets.PRODUCTION_KUBECONFIG }}
+          PRODUCTION_KUBE_CONTEXT: ${{ secrets.PRODUCTION_KUBE_CONTEXT }}
+          PRODUCTION_KUBE_IMAGE_PULL_SECRET: ${{ secrets.PRODUCTION_KUBE_IMAGE_PULL_SECRET }}
+          PRODUCTION_KUBE_NAMESPACE: ${{ secrets.PRODUCTION_KUBE_NAMESPACE }}
+          SSH_DEPLOY_PATH: ${{ secrets.SSH_DEPLOY_PATH }}
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_KEY: ${{ secrets.SSH_KEY }}
+          SSH_SSH_PORT: ${{ secrets.SSH_SSH_PORT }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          STAGING_DOCKER_CERT_PATH: ${{ secrets.STAGING_DOCKER_CERT_PATH }}
+          STAGING_DOCKER_HOST: ${{ secrets.STAGING_DOCKER_HOST }}
+          STAGING_DOCKER_IMAGE_NAME: ${{ secrets.STAGING_DOCKER_IMAGE_NAME }}
+          STAGING_DOCKER_IMAGE_TAG: ${{ secrets.STAGING_DOCKER_IMAGE_TAG }}
+          STAGING_DOCKER_REGISTRY_TOKEN: ${{ secrets.STAGING_DOCKER_REGISTRY_TOKEN }}
+          STAGING_DOCKER_REGISTRY_URL: ${{ secrets.STAGING_DOCKER_REGISTRY_URL }}
+          STAGING_DOCKER_REGISTRY_USERNAME: ${{ secrets.STAGING_DOCKER_REGISTRY_USERNAME }}
+          STAGING_DOCKER_TLS_VERIFY: ${{ secrets.STAGING_DOCKER_TLS_VERIFY }}
+
+=== ROLLBACK env block ===
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_BUCKET: ${{ secrets.AWS_BUCKET }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          DEPLOYHUB_ENV: development
+          EC2_INSTANCE_ID: ${{ secrets.EC2_INSTANCE_ID }}
+          KUBECONFIG: ${{ github.workspace }}/.kube/config
+          PRODUCTION_DOCKER_IMAGE_NAME: ${{ secrets.PRODUCTION_DOCKER_IMAGE_NAME }}
+          PRODUCTION_DOCKER_IMAGE_TAG: ${{ secrets.PRODUCTION_DOCKER_IMAGE_TAG }}
+          PRODUCTION_DOCKER_REGISTRY_TOKEN: ${{ secrets.PRODUCTION_DOCKER_REGISTRY_TOKEN }}
+          PRODUCTION_DOCKER_REGISTRY_URL: ${{ secrets.PRODUCTION_DOCKER_REGISTRY_URL }}
+          PRODUCTION_DOCKER_REGISTRY_USERNAME: ${{ secrets.PRODUCTION_DOCKER_REGISTRY_USERNAME }}
+          PRODUCTION_KUBECONFIG: ${{ secrets.PRODUCTION_KUBECONFIG }}
+          PRODUCTION_KUBE_CONTEXT: ${{ secrets.PRODUCTION_KUBE_CONTEXT }}
+          PRODUCTION_KUBE_IMAGE_PULL_SECRET: ${{ secrets.PRODUCTION_KUBE_IMAGE_PULL_SECRET }}
+          PRODUCTION_KUBE_NAMESPACE: ${{ secrets.PRODUCTION_KUBE_NAMESPACE }}
+          SSH_DEPLOY_PATH: ${{ secrets.SSH_DEPLOY_PATH }}
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_KEY: ${{ secrets.SSH_KEY }}
+          SSH_SSH_PORT: ${{ secrets.SSH_SSH_PORT }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          STAGING_DOCKER_CERT_PATH: ${{ secrets.STAGING_DOCKER_CERT_PATH }}
+          STAGING_DOCKER_HOST: ${{ secrets.STAGING_DOCKER_HOST }}
+          STAGING_DOCKER_IMAGE_NAME: ${{ secrets.STAGING_DOCKER_IMAGE_NAME }}
+          STAGING_DOCKER_IMAGE_TAG: ${{ secrets.STAGING_DOCKER_IMAGE_TAG }}
+          STAGING_DOCKER_REGISTRY_TOKEN: ${{ secrets.STAGING_DOCKER_REGISTRY_TOKEN }}
+          STAGING_DOCKER_REGISTRY_URL: ${{ secrets.STAGING_DOCKER_REGISTRY_URL }}
+          STAGING_DOCKER_REGISTRY_USERNAME: ${{ secrets.STAGING_DOCKER_REGISTRY_USERNAME }}
+          STAGING_DOCKER_TLS_VERIFY: ${{ secrets.STAGING_DOCKER_TLS_VERIFY }}
