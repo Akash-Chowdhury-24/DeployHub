@@ -31,17 +31,52 @@ Downloads the latest release from [GitHub Releases](https://github.com/Akash-Cho
 curl -fsSL https://raw.githubusercontent.com/Akash-Chowdhury-24/DeployHub/main/install.sh | sh
 ```
 
-Supported platforms: Linux x64, macOS x64, macOS ARM64. If the binary download fails, the script falls back to `npm install -g`.
+Supported platforms: Linux x64, macOS x64, macOS ARM64. If the binary download fails, the script falls back to `npm install -g`. After install it warns if `deployhub` on PATH still resolves to a different (e.g. older npm-global) binary — see the Windows notes below for the same dual-channel conflict.
+
+> **macOS `install.sh` — UNTESTED on real hardware in this project’s verification so far**
+>
+> Release assets `deployhub-macos-x64` and `deployhub-macos-arm64` are published and downloadable, and `install.sh` has `darwin` / `x86_64` / `arm64` branches that *should* select those names. The PATH-collision warning and clean/no-collision cases were proven on **Windows** (native) and **Linux** (Docker). They have **not** been run on a real Mac (Intel or Apple Silicon). Linux Docker proof does **not** cover macOS: different `uname` platform branch, different binary assets, BSD userland (`sed` / `readlink` / etc.), and default interactive shell is **zsh** (Catalina+) — the script does not edit `.zshrc` / `.zprofile` / `.bashrc` at all; for a non-sudo install it only prints that you must ensure `~/.local/bin` is on PATH. Treat first macOS binary install as unverified until someone pastes real Terminal output for collision + clean cases on both arch flavors (or at least the arch you use).
 
 ### Standalone binary (Windows)
 
-Run in PowerShell:
+Run in **PowerShell** (does **not** require an elevated/Administrator session — installs under your user profile only):
 
 ```powershell
 irm https://raw.githubusercontent.com/Akash-Chowdhury-24/DeployHub/main/install.ps1 | iex
 ```
 
-Installs to `%LOCALAPPDATA%\Programs\DeployHub` and adds it to your user PATH. On Windows ARM64, the script installs via npm instead (no native binary yet).
+**What the script actually does:**
+- **x64:** downloads the GitHub Release asset `deployhub-win.exe` and saves it as `%LOCALAPPDATA%\Programs\DeployHub\deployhub.exe` (plain `deployhub` on PATH), then appends that folder to your **user** `PATH` (not machine-wide).
+- **ARM64:** there is no Windows ARM64 binary yet — the script skips the download and runs `npm install -g @akash-chowdhury-24/deployhub@latest` immediately (**requires Node.js 18+**).
+- **Failed x64 download:** the script **does** fall back to the same npm global install (also requires Node.js 18+). If you have neither a working download nor Node.js, installation fails.
+- **No checksum/signature check in the script** — release assets include a `checksums.txt` (SHA-256), but `install.ps1` does not verify it automatically. Binaries are **not Authenticode code-signed**.
+- **PATH collision warning:** if an older install (commonly `npm install -g`) still resolves first, the script prints a warning with `Get-Command deployhub -All` / `npm uninstall -g` guidance. `install.sh` on Linux/macOS does the same check (`type -a deployhub`).
+
+> **Open a new PowerShell window after installing.** User `PATH` changes do not apply to the window that ran `iex`. Until you open a new session, `deployhub` may be “not recognized” even though the install succeeded.
+
+> **Previously installed via npm?** Binary and npm installs can both put `deployhub` on PATH. After the binary installer finishes, if `deployhub --version` still shows an older version, run `Get-Command deployhub -All` (Windows) or `type -a deployhub` (Linux/macOS). Remove the stale npm copy with `npm uninstall -g @akash-chowdhury-24/deployhub`, or put `%LOCALAPPDATA%\Programs\DeployHub` (Windows) / `/usr/local/bin` or `~/.local/bin` (Unix) earlier in PATH. Then open a **new** terminal and re-check `--version`.
+
+> **Windows `pkg` binary — what is and isn’t verified**
+>
+> DeployHub’s only native-adjacent dependency is **`ssh2`** (used by SSH / EC2 / Azure VM / GCP VM). It optionally uses `cpu-features` and an optional `sshcrypto.node` binding; both are try/catch’d and fall back to pure JS/`crypto` when missing. `cpu-features` is **not** listed in `pkg.assets` and is typically absent from installs — that is expected. Storage SDKs (`@aws-sdk/*`, `@azure/storage-blob`, `@google-cloud/storage`, `googleapis`, `dropbox`, `basic-ftp`) and `execa` (Docker / Kubernetes / cloud-CLI lookups) are pure JS / HTTP / process-spawn.
+>
+> **Exercised on the published `deployhub-win.exe` (module load / CLI spawn — not a full live deploy):**
+> - CLI boot (`--version` / `--help`)
+> - **SSH path:** `ssh2`/`node-ssh` load and attempt a real TCP connect (failed on missing key / `ECONNREFUSED` — i.e. past native-load risk)
+> - **AWS S3 SDK** load (SDK warning + doctor AWS check ran)
+> - **Azure / GCP / Google Drive / Dropbox / local** storage provider modules load (doctor checks ran; failures were credentials/API/ENOENT — not `MODULE_NOT_FOUND`)
+> - **Docker** via `execa` → host `docker.exe` (daemon pipe missing is an environment issue; spawn worked)
+> - **Kubernetes** via `execa` → host `kubectl` (cluster unreachable; spawn worked)
+>
+> **Still unproven end-to-end on Windows binary against real infrastructure:** a successful SSH session to a live host (auth + remote commands), a successful S3 (or other cloud) upload with real credentials, and a successful Docker/Kubernetes deploy. Those remain first-real-use risks for network/auth/config — not for missing native addons based on current evidence. If SSH from the `.exe` misbehaves oddly, compare with `npm install -g @akash-chowdhury-24/deployhub` (requires Node.js 18+).
+
+Manual checksum check (optional, recommended for locked-down environments):
+
+```powershell
+# After install, or after downloading deployhub-win.exe from the release page:
+Get-FileHash "$env:LOCALAPPDATA\Programs\DeployHub\deployhub.exe" -Algorithm SHA256
+# Compare to the deployhub-win.exe line in checksums.txt from the same release.
+```
 
 ### Manual download
 
@@ -1060,6 +1095,15 @@ Prefer `deployhub init` over hand-writing config — it sets adapters, workflow,
 | Wrong output uploaded | Fix `buildOutput` in config (`dist` vs `build` vs `.next`) |
 | Tests fail in CI | Set `"pipeline": { "test": false }` temporarily, or fix tests |
 | Monorepo subfolders | Edit `buildCommand` paths in `deployhub.config.json` after init |
+
+### Windows install (`install.ps1`)
+
+| Problem | Fix |
+|---------|-----|
+| `irm` / `iex` blocked, or SmartScreen / Defender flags `deployhub.exe` | The Windows binary is **not Authenticode code-signed**, so SmartScreen often warns on first run. Click **More info → Run anyway**, or download `deployhub-win.exe` + `checksums.txt` from [Releases](https://github.com/Akash-Chowdhury-24/DeployHub/releases/latest) and verify the SHA-256 hash before running. If your org blocks unsigned binaries entirely, install via npm instead: `npm install -g @akash-chowdhury-24/deployhub` (requires Node.js 18+). |
+| `deployhub : The term 'deployhub' is not recognized` right after install | **Open a new PowerShell window** first — user `PATH` updates do not apply to the session that ran `iex`. Confirm the file exists at `%LOCALAPPDATA%\Programs\DeployHub\deployhub.exe`. If it is missing, re-run the install script or use the npm fallback. |
+| `deployhub --version` shows an unexpected / old version | Compare against the [latest release tag](https://github.com/Akash-Chowdhury-24/DeployHub/releases/latest). Run `Get-Command deployhub -All` (Windows) or `type -a deployhub` (Unix) — an older **npm global** install often wins PATH order. Fix: `npm uninstall -g @akash-chowdhury-24/deployhub`, or put the binary install dir first in PATH, then open a **new** terminal. Force a clean binary reinstall: delete `%LOCALAPPDATA%\Programs\DeployHub`, re-run `install.ps1`, open a new PowerShell window. |
+| Binary download fails and npm fallback errors | The x64 script falls back to `npm install -g …` when the GitHub download fails. That fallback **requires Node.js 18+ and npm on PATH**. Without Node, fix network access to GitHub Releases, or install Node and retry. |
 
 Run `deployhub doctor` after any config change.
 
