@@ -8,6 +8,7 @@ import { createDockerImageDeployContext } from '../../utils/docker-image-deploy.
 import { resolveDockerImageRefForTag } from '../../utils/docker-image.js';
 import { ensureKubernetesNamespace } from '../../utils/kubernetes-namespace.js';
 import { syncKubernetesDeploymentImage } from '../../utils/kubernetes-deploy-image.js';
+import { resolveKubeNamespace } from '../../utils/kube-namespace-name.js';
 import { getEnvSettings, mergeMethodSettingsIntoEnv } from '../../core/environments.js';
 
 /**
@@ -24,8 +25,9 @@ export function createKubernetesProvider(config, envName, env = process.env) {
   const kubeconfig =
     effectiveEnv.KUBECONFIG || path.join(os.homedir(), '.kube', 'config');
   const context = effectiveEnv.KUBE_CONTEXT || '';
-  const namespace =
-    effectiveEnv.KUBE_NAMESPACE || config.project || 'default';
+  // Env-scoped like Nginx/PM2 — same-cluster multi-env must not share one namespace
+  // when settings still default to the project name for every environment.
+  const namespace = resolveKubeNamespace(config, envName, effectiveEnv);
   const deploymentName = sanitizeK8sName(config.project || 'app');
 
   function getKubectlEnv() {

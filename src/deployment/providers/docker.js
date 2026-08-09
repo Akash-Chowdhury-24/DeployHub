@@ -2,6 +2,7 @@ import { execa } from 'execa';
 import { createLogger } from '../../logger/index.js';
 import { createDockerImageDeployContext } from '../../utils/docker-image-deploy.js';
 import { resolveDockerImageRefForTag } from '../../utils/docker-image.js';
+import { resolveDockerContainerName } from '../../utils/docker-container-name.js';
 import { getEnvSettings, mergeMethodSettingsIntoEnv } from '../../core/environments.js';
 
 /**
@@ -15,6 +16,8 @@ export function createDockerProvider(config, envName, env = process.env) {
   const effectiveEnv = mergeMethodSettingsIntoEnv(env, settings);
   const imageOps = createDockerImageDeployContext(config, effectiveEnv, log);
   const { fullImage, getDockerEnv, ensureImageReadyForDeploy } = imageOps;
+  // Env-scoped like PM2/Nginx — same-daemon multi-env must not share one container name.
+  const containerName = resolveDockerContainerName(config, envName);
 
   /**
    * @param {string} artifactDir
@@ -36,11 +39,11 @@ export function createDockerProvider(config, envName, env = process.env) {
 
     await execa(
       'docker',
-      ['rm', '-f', config.project],
+      ['rm', '-f', containerName],
       { stdio: 'pipe', env: dockerEnv }
     ).catch(() => {});
 
-    await execa('docker', ['run', '-d', '--rm', '--name', config.project, imageRef], {
+    await execa('docker', ['run', '-d', '--rm', '--name', containerName, imageRef], {
       stdio: 'inherit',
       env: dockerEnv,
     });
@@ -81,7 +84,7 @@ export function createDockerProvider(config, envName, env = process.env) {
     try {
       const { stdout } = await execa(
         'docker',
-        ['ps', '--filter', `name=${config.project}`, '--format', '{{.Status}}'],
+        ['ps', '--filter', `name=^/${containerName}$`, '--format', '{{.Status}}'],
         { stdio: 'pipe', env: getDockerEnv() }
       );
       return stdout.includes('Up');

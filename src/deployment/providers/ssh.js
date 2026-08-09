@@ -10,6 +10,7 @@ import {
   getNginxConfDPath,
   resolveNginxSiteName,
 } from '../../utils/nginx.js';
+import { resolvePm2AppName } from '../../utils/pm2-app-name.js';
 import { shellQuote, formatRemoteCommandFailure } from '../../utils/shell-quote.js';
 
 /** @type {Set<string>} */
@@ -44,8 +45,8 @@ export function createSshProvider(config, envName, env = process.env) {
     settings.frontendDeployPath || deployPath;
   const backendDeployPath =
     settings.backendDeployPath || deployPath;
-  const appName =
-    settings.appName || env.SSH_APP_NAME || config.project;
+  // Env-scoped like Nginx site names — same-host multi-env must not share one PM2 name.
+  const appName = resolvePm2AppName(config, envName, env);
   const port = settings.port || config.port || Number(env.SSH_PORT) || 3000;
   const sshKey = env.SSH_KEY;
   const keyPath = settings.keyPath || env.SSH_KEY_PATH;
@@ -134,6 +135,58 @@ export function createSshProvider(config, envName, env = process.env) {
   }
 
   /**
+   * Stop a previously managed non-PM2 backend for THIS env only.
+   *
+   * PID-file kill is gated: we only signal a PID if /proc shows our
+   * DEPLOYHUB_APP / deployhub.app marker in cmdline or environ. A stale PID
+   * reused by an unrelated process is left alone (file still removed).
+   * Marker-based pkill remains the primary stop for live processes.
+   *
+   * @param {import('node-ssh').NodeSSH} ssh
+   * @param {string} targetPath
+   */
+  async function stopScopedBackendProcess(ssh, targetPath) {
+    const pidFile = `${targetPath}/.deployhub.pid`;
+    const markerEnv = `DEPLOYHUB_APP=${appName}`;
+    const markerJvm = `deployhub.app=${appName}`;
+    // Verify-then-kill: only signal a PID if /proc shows our marker in cmdline
+    // or environ. A stale PID reused by an unrelated process is left alone
+    // (the pidfile is still removed so the next start writes a fresh one).
+    await exec(
+      ssh,
+      `if [ -f ${sh(pidFile)} ]; then ` +
+        `pid="$(cat ${sh(pidFile)} 2>/dev/null | tr -cd '0-9')"; ` +
+        `if [ -n "$pid" ] && [ -r "/proc/$pid/cmdline" ]; then ` +
+          `if tr '\\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | grep -q -F ${sh(markerEnv)} ` +
+          `|| tr '\\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | grep -q -F ${sh(markerJvm)} ` +
+          `|| { [ -r "/proc/$pid/environ" ] && tr '\\0' ' ' < "/proc/$pid/environ" 2>/dev/null | grep -q -F ${sh(markerEnv)}; }; then ` +
+            `kill "$pid" 2>/dev/null || true; ` +
+          `fi; ` +
+        `fi; ` +
+        `rm -f ${sh(pidFile)}; ` +
+      `fi`
+    );
+    // Marker match — covers lost PID files / processes without a readable pidfile.
+    await exec(ssh, `pkill -f ${sh(markerEnv)} || true`);
+    await exec(ssh, `pkill -f ${sh(markerJvm)} || true`);
+  }
+
+  /**
+   * Start a nohup process with DEPLOYHUB_APP marker and write PID file.
+   * @param {import('node-ssh').NodeSSH} ssh
+   * @param {string} targetPath
+   * @param {string} command — command body after `nohup` (no trailing &)
+   */
+  async function startScopedNohup(ssh, targetPath, command) {
+    const pidFile = `${targetPath}/.deployhub.pid`;
+    const dir = sh(targetPath);
+    await exec(
+      ssh,
+      `cd ${dir} && DEPLOYHUB_APP=${sh(appName)} nohup ${command} > app.log 2>&1 & echo $! > ${sh(pidFile)}`
+    );
+  }
+
+  /**
    * @param {import('node-ssh').NodeSSH} ssh
    * @param {string} targetPath
    */
@@ -141,6 +194,7 @@ export function createSshProvider(config, envName, env = process.env) {
     const framework = resolveFramework();
     const startCommand = resolveStartCommand();
     const dir = sh(targetPath);
+    const pidFile = `${targetPath}/.deployhub.pid`;
 
     if (NODE_FRAMEWORKS.has(framework)) {
       await exec(ssh, `cd ${dir} && npm install --production`);
@@ -172,25 +226,28 @@ export function createSshProvider(config, envName, env = process.env) {
       if (framework === 'django') {
         await exec(ssh, `cd ${dir} && python manage.py migrate`);
       }
+      await stopScopedBackendProcess(ssh, targetPath);
       if (framework === 'fastapi') {
-        await exec(ssh, 'pkill uvicorn || true');
-        await exec(
+        await startScopedNohup(
           ssh,
-          `cd ${dir} && nohup uvicorn main:app --host 0.0.0.0 --port ${port} > app.log 2>&1 &`
+          targetPath,
+          `uvicorn main:app --host 0.0.0.0 --port ${port}`
         );
       } else {
-        await exec(ssh, 'pkill gunicorn || true');
+        // gunicorn --daemon writes its own PID; still set DEPLOYHUB_APP for pkill fallback.
         const appTarget =
           framework === 'django' ? 'config.wsgi:application' : 'app:app';
         await exec(
           ssh,
-          `cd ${dir} && nohup gunicorn ${appTarget} --bind 0.0.0.0:${port} --daemon`
+          `cd ${dir} && DEPLOYHUB_APP=${sh(appName)} gunicorn ${appTarget} --name ${sh(`deployhub-${appName}`)} --bind 0.0.0.0:${port} --pid ${sh(pidFile)} --daemon`
         );
       }
       return;
     }
 
     if (PHP_FRAMEWORKS.has(framework)) {
+      // PHP uses a host-wide `systemctl restart php*-fpm` (see README PHP warning).
+      // Per-env isolation is Nginx site name + deploy path — not automated FPM pools.
       await exec(ssh, `cd ${dir} && composer install --no-dev`);
       if (framework === 'laravel') {
         await exec(ssh, `cd ${dir} && php artisan migrate --force`);
@@ -202,40 +259,36 @@ export function createSshProvider(config, envName, env = process.env) {
     }
 
     if (framework === 'spring' || framework === 'java') {
-      await exec(ssh, `cd ${dir} && pkill -f "*.jar" || true`);
-      await exec(
+      await stopScopedBackendProcess(ssh, targetPath);
+      // -Ddeployhub.app= embeds the env-scoped identity in the JVM command line
+      // so pkill -f DEPLOYHUB_APP=… and the PID file both target only this env.
+      await startScopedNohup(
         ssh,
-        `cd ${dir} && nohup java -jar target/*.jar > app.log 2>&1 &`
+        targetPath,
+        `java -Ddeployhub.app=${appName} -jar target/*.jar`
       );
       return;
     }
 
     if (framework === 'go') {
-      await exec(ssh, `cd ${dir} && pkill ${sh(appName)} || true`);
-      await exec(
-        ssh,
-        `cd ${dir} && nohup ./bin/app > app.log 2>&1 &`
-      );
+      await stopScopedBackendProcess(ssh, targetPath);
+      // Binary is always ./bin/app — must NOT pkill by appName alone (that never
+      // matched the process) and must NOT pkill a bare "app" (cross-env collision).
+      await startScopedNohup(ssh, targetPath, './bin/app');
       return;
     }
 
     if (framework === 'dotnet') {
-      await exec(ssh, `cd ${dir} && pkill -f "dotnet" || true`);
+      await stopScopedBackendProcess(ssh, targetPath);
       const dll = startCommand?.replace('dotnet ', '') || 'App.dll';
-      await exec(
-        ssh,
-        `cd ${dir} && nohup dotnet ${dll} > app.log 2>&1 &`
-      );
+      await startScopedNohup(ssh, targetPath, `dotnet ${dll}`);
       return;
     }
 
     if (framework === 'rails') {
       await exec(ssh, `cd ${dir} && bundle install --deployment`);
-      await exec(ssh, `cd ${dir} && pkill puma || true`);
-      await exec(
-        ssh,
-        `cd ${dir} && nohup bundle exec puma -p ${port} > app.log 2>&1 &`
-      );
+      await stopScopedBackendProcess(ssh, targetPath);
+      await startScopedNohup(ssh, targetPath, `bundle exec puma -p ${port}`);
       return;
     }
 

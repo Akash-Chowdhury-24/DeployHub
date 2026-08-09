@@ -33,6 +33,18 @@ export function suggestSshUser(osHint) {
 }
 
 /**
+ * Normalize the optional health-check URL from `deployhub init`.
+ * Blank / whitespace → empty string. Never synthesizes localhost defaults
+ * (those always fail from GitHub Actions runners, which are not the deploy target).
+ *
+ * @param {unknown} answer
+ * @returns {string}
+ */
+export function normalizeInitHealthCheckUrl(answer) {
+  return typeof answer === 'string' && answer.trim() ? answer.trim() : '';
+}
+
+/**
  * @param {string} keyPath
  * @returns {Promise<{ ok: boolean, message: string, fixed?: boolean }>}
  */

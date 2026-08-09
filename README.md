@@ -618,6 +618,8 @@ All JS frontends share the same install/build flow: `npm ci` → `npm run build`
 - **Install:** Composer (on CI and server).
 - **Deploy:** SSH with PHP-FPM or `php artisan` for Laravel.
 
+> ⚠️ **PHP-FPM deployments restart the FPM service for the ENTIRE host on every deploy.** If you run multiple DeployHub-managed environments on the same server, deploying ANY of them will briefly interrupt in-flight requests for ALL of them. For production use with multiple environments, either use separate hosts per environment, or set up per-environment PHP-FPM pools manually (not yet automated by DeployHub).
+
 ### Java
 
 - **Detect:** `pom.xml` with Spring Boot.

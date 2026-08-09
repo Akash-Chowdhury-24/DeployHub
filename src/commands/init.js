@@ -36,7 +36,7 @@ import {
   printDeploymentNextSteps,
   formatSecretChecklistLine,
 } from '../deployment/deployment-env.js';
-import { confirmValueIfContainsSpaces } from '../deployment/init-helpers.js';
+import { confirmValueIfContainsSpaces, normalizeInitHealthCheckUrl } from '../deployment/init-helpers.js';
 
 const FRONTEND_CHOICES = [
   { name: 'React', value: 'react' },
@@ -405,10 +405,13 @@ export function registerInitCommand(program) {
 
           environments[name] = entry;
 
-          if (deployAnswers.healthUrl) {
-            healthUrl = deployAnswers.healthUrl;
-          } else if (!healthUrl && (singleConfig?.port || backendConfig?.port)) {
-            healthUrl = `http://localhost:${singleConfig?.port || backendConfig?.port}/health`;
+          // Only persist a health check URL the user actually entered.
+          // Never synthesize http://localhost:<port>/health — that always fails
+          // from GitHub Actions (remote runner ≠ deploy target) and incorrectly
+          // enables the verify stage when the user left the optional prompt blank.
+          const answered = normalizeInitHealthCheckUrl(deployAnswers.healthUrl);
+          if (answered) {
+            healthUrl = answered;
           }
 
           const secrets = getDockerEnvSecrets(deployAnswers);

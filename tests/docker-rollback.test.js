@@ -246,7 +246,7 @@ describe('docker provider rollback', () => {
     );
     expect(mockExeca).toHaveBeenCalledWith(
       'docker',
-      ['run', '-d', '--rm', '--name', 'myapp', 'org/production-app:0.1.0-prod'],
+      ['run', '-d', '--rm', '--name', 'myapp-production', 'org/production-app:0.1.0-prod'],
       expect.any(Object)
     );
 
@@ -272,7 +272,7 @@ describe('docker provider rollback', () => {
     );
     expect(mockExeca).toHaveBeenCalledWith(
       'docker',
-      ['run', '-d', '--rm', '--name', 'myapp', 'org/testing-app:0.1.0-test'],
+      ['run', '-d', '--rm', '--name', 'myapp-testing', 'org/testing-app:0.1.0-test'],
       expect.any(Object)
     );
   });

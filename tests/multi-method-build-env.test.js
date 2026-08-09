@@ -215,6 +215,63 @@ describe('multi-method Build env secret union (same bugs as 2×EC2)', () => {
     expect(buildEnv.SSH_KEY).not.toBe('${{ secrets.PRODUCTION_SSH_KEY }}');
   });
 
+  test('Backend EC2: SSH_APP_NAME + SSH_PORT present for grandfathered and PRODUCTION_*, no clobber, Build===Dispatch', () => {
+    const environments = {
+      development: {
+        enabled: true,
+        method: 'ec2',
+        trigger: 'push',
+        config: { host: 'dev.example.com', appName: 'demo-api', port: 3000 },
+      },
+      production: {
+        enabled: true,
+        method: 'ec2',
+        trigger: 'push',
+        config: { host: 'prod.example.com', appName: 'demo-api', port: 3000 },
+      },
+    };
+    const config = {
+      project: 'demo',
+      projectType: 'backend',
+      framework: 'express',
+      port: 3000,
+      defaultEnvironment: 'development',
+      unprefixedSecretEnvironment: 'development',
+      environments,
+    };
+    const text = generateWorkflowYaml(
+      ['aws'],
+      ['development', 'production'],
+      environments,
+      CLI,
+      config
+    );
+    const parsed = yaml.load(text);
+    const buildEnv = stepEnv(parsed, 'Build');
+    const dispatchEnv = stepEnv(parsed, 'workflow_dispatch');
+
+    expect(buildEnv.SSH_APP_NAME).toBe('${{ secrets.SSH_APP_NAME }}');
+    expect(buildEnv.SSH_PORT).toBe('${{ secrets.SSH_PORT }}');
+    expect(buildEnv.PRODUCTION_SSH_APP_NAME).toBe(
+      '${{ secrets.PRODUCTION_SSH_APP_NAME }}'
+    );
+    expect(buildEnv.PRODUCTION_SSH_PORT).toBe('${{ secrets.PRODUCTION_SSH_PORT }}');
+    // No last-wins clobber of grandfathered bindings
+    expect(buildEnv.SSH_APP_NAME).not.toBe('${{ secrets.PRODUCTION_SSH_APP_NAME }}');
+    expect(buildEnv.SSH_PORT).not.toBe('${{ secrets.PRODUCTION_SSH_PORT }}');
+
+    for (const key of [
+      'SSH_APP_NAME',
+      'SSH_PORT',
+      'PRODUCTION_SSH_APP_NAME',
+      'PRODUCTION_SSH_PORT',
+      'SSH_KEY',
+      'PRODUCTION_SSH_KEY',
+    ]) {
+      expect(dispatchEnv[key]).toBe(buildEnv[key]);
+    }
+  });
+
   test('Mixed ec2+docker+kubernetes ALL push — complete disjoint secret sets, no cross-contamination', () => {
     const environments = {
       development: {
