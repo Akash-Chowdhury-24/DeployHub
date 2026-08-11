@@ -290,8 +290,15 @@ export function createSshProvider(config, envName, env = process.env) {
   /**
    * Start a nohup process with DEPLOYHUB_APP marker and write PID file.
    * Marker is set in environ AND embedded as argv0 via `bash exec -a` so it
-   * appears in /proc/cmdline (pkill -f / cmdline scans can see it). Plain
+   * appears in /proc/cmdline (cmdline scans can see it). Plain
    * `VAR=value cmd` alone only puts the marker in environ.
+   *
+   * Critical shell-precedence note: `cd dir && nohup cmd & echo $!` is parsed
+   * as `(cd dir && nohup cmd) & echo $!`. Backgrounding that AND-list leaves
+   * the SSH session's bash waiting on the still-running app, so node-ssh never
+   * sees channel completion (false deploy failure) even though the process
+   * started. Brace-group so only nohup is backgrounded:
+   * `cd dir && { nohup cmd & echo $!; }`
    *
    * @param {import('node-ssh').NodeSSH} ssh
    * @param {string} targetPath
@@ -305,7 +312,7 @@ export function createSshProvider(config, envName, env = process.env) {
     // bash exec -a puts DEPLOYHUB_APP=… in argv0 of the real process after exec.
     await exec(
       ssh,
-      `cd ${dir} && DEPLOYHUB_APP=${sh(appName)} nohup bash -c 'exec -a "$0" "$@"' ${markerArg} ${command} > app.log 2>&1 </dev/null & echo $! > ${sh(pidFile)}`,
+      `cd ${dir} && { DEPLOYHUB_APP=${sh(appName)} nohup bash -c 'exec -a "$0" "$@"' ${markerArg} ${command} > app.log 2>&1 </dev/null & echo $! > ${sh(pidFile)}; }`,
       { timeoutMs: startStopTimeoutMs }
     );
     await assertPidAliveAfterStart(ssh, targetPath);

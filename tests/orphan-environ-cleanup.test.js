@@ -110,6 +110,27 @@ describe('orphaned env-only backend process cleanup', () => {
     expect(start).toMatch(/exec -a/);
     expect(start).toMatch(/DEPLOYHUB_APP='myapi'|DEPLOYHUB_APP=myapi/);
     expect(start).toMatch(/<\/dev\/null/);
+    // Brace-group prevents `cd && nohup ... &` from backgrounding the AND-list
+    // (that precedence bug hangs real SSH while the app still starts).
+    expect(start).toMatch(/cd .+ && \{[\s\S]*nohup[\s\S]*& echo \$!/);
+    expect(start).not.toMatch(/cd .+ && DEPLOYHUB_APP=.+ nohup .+ <\/dev\/null & echo/);
+  });
+
+  test('FastAPI / Go / Java / .NET / Rails start commands all use brace-grouped nohup', async () => {
+    for (const framework of ['fastapi', 'go', 'spring', 'dotnet', 'rails']) {
+      execCommands.length = 0;
+      const config = makeConfig(framework);
+      config.environments.development.config.keyPath = keyPath;
+      const provider = createSshProvider(config, 'development');
+      await provider.deploy(artifactDir);
+
+      const start = execCommands.find(
+        (c) => c.includes('nohup') && c.includes('DEPLOYHUB_APP')
+      );
+      expect(start).toBeTruthy();
+      expect(start).toMatch(/cd .+ && \{[\s\S]*nohup[\s\S]*& echo \$!/);
+      expect(start).toMatch(/exec -a/);
+    }
   });
 
   test('FastAPI / Go / Java / .NET / Rails / Flask all use environ orphan scan', async () => {
