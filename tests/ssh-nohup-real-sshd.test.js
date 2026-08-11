@@ -4,28 +4,26 @@
  *
  * Background (confirmed on Ubuntu 24.04 sshd + node-ssh during investigation):
  * `cd dir && nohup cmd & echo $!` parses as `(cd dir && nohup cmd) & echo $!`.
- * That leaves the SSH session hung while the app still starts (false failure).
+ * That can leave the SSH session hung while the app still starts (false failure).
  * Brace form `cd dir && { nohup cmd & echo $!; }` returns immediately.
  *
- * Requires Docker. describe.skip when Docker is unavailable.
+ * Note: whether the *buggy* form hangs is host/OpenSSH/bash dependent (seen on
+ * some Ubuntu setups, not on all CI runners). This suite therefore asserts the
+ * fixed form's reliability + markers — not that the buggy form hangs.
  *
- * The "buggy form hangs" probe runs in a child process we SIGKILL after the
- * probe window — holding a hung ssh2 channel in-process leaks Jest handles.
+ * Requires Docker. describe.skip when Docker is unavailable.
  */
 import { jest } from '@jest/globals';
-import { execa, execaNode } from 'execa';
+import { execa } from 'execa';
 import fs from 'fs-extra';
 import os from 'os';
 import path from 'path';
-import { fileURLToPath } from 'url';
 import { NodeSSH } from 'node-ssh';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CONTAINER = 'deployhub-test-sshd';
 const IMAGE = 'deployhub-test-sshd:ubuntu';
 const SSH_PORT = 2223;
 const START_BUDGET_MS = 5000;
-const BUGGY_PROBE_MS = 2500;
 
 /** @returns {Promise<boolean>} */
 async function dockerAvailable() {
@@ -109,6 +107,7 @@ CMD ["/usr/sbin/sshd","-D","-e"]
 }
 
 /**
+ * Fixed startScopedNohup template (brace-grouped).
  * @param {string} deployPath
  * @param {string} body
  */
@@ -116,17 +115,6 @@ function fixedStartCommand(deployPath, body) {
   const marker = `'DEPLOYHUB_APP=myapi'`;
   return (
     `cd '${deployPath}' && { DEPLOYHUB_APP='myapi' nohup bash -c 'exec -a "$0" "$@"' ${marker} ${body} > app.log 2>&1 </dev/null & echo $! > '${deployPath}/.deployhub.pid'; }`
-  );
-}
-
-/**
- * @param {string} deployPath
- * @param {string} body
- */
-function buggyStartCommand(deployPath, body) {
-  const marker = `'DEPLOYHUB_APP=myapi'`;
-  return (
-    `cd '${deployPath}' && DEPLOYHUB_APP='myapi' nohup bash -c 'exec -a "$0" "$@"' ${marker} ${body} > app.log 2>&1 </dev/null & echo $! > '${deployPath}/.deployhub.pid'`
   );
 }
 
@@ -155,53 +143,6 @@ async function waitForMarkers(ssh, deployPath) {
   );
 }
 
-/**
- * Run the known-hanging command in a child process; SIGKILL after probeMs.
- * Returns true if the child was still running (hang confirmed).
- * @param {string} keyPath
- * @param {string} command
- * @param {number} probeMs
- * @param {string} tmpDir
- */
-async function buggyCommandStillHanging(keyPath, command, probeMs, tmpDir) {
-  const probeScript = path.join(tmpDir, 'ssh-hang-probe.mjs');
-  await fs.writeFile(
-    probeScript,
-    `
-import { NodeSSH } from 'node-ssh';
-const ssh = new NodeSSH();
-await ssh.connect({
-  host: '127.0.0.1',
-  port: ${SSH_PORT},
-  username: 'deploy',
-  privateKeyPath: ${JSON.stringify(keyPath)},
-});
-// Intentionally never resolves on Ubuntu when command has the cd&&nohup& bug.
-await ssh.execCommand(${JSON.stringify(command)});
-process.stdout.write('RETURNED');
-ssh.dispose();
-`.trim()
-  );
-
-  const child = execaNode(probeScript, {
-    reject: false,
-    cwd: path.resolve(__dirname, '..'),
-  });
-  const outcome = await Promise.race([
-    child.then((r) => ({ kind: 'exited', r })),
-    new Promise((resolve) =>
-      setTimeout(() => resolve({ kind: 'stillRunning' }), probeMs)
-    ),
-  ]);
-
-  if (outcome.kind === 'stillRunning') {
-    child.kill('SIGKILL');
-    await child.catch(() => {});
-    return true;
-  }
-  return false;
-}
-
 describeRealSsh('startScopedNohup real SSH completion (Docker sshd)', () => {
   jest.setTimeout(300000);
 
@@ -220,38 +161,7 @@ describeRealSsh('startScopedNohup real SSH completion (Docker sshd)', () => {
     await execa('docker', ['rm', '-f', CONTAINER], { reject: false });
   });
 
-  test('brace-grouped exec -a returns <5s with environ+cmdline markers; buggy form hangs on Ubuntu', async () => {
-    const probePath = '/home/deploy/app-hang-probe';
-    const setup = new NodeSSH();
-    await setup.connect({
-      host: '127.0.0.1',
-      port: SSH_PORT,
-      username: 'deploy',
-      privateKeyPath: keyPath,
-    });
-    await setup.execCommand(`mkdir -p ${probePath}`);
-    setup.dispose();
-
-    const hung = await buggyCommandStillHanging(
-      keyPath,
-      buggyStartCommand(probePath, 'sleep 3600'),
-      BUGGY_PROBE_MS,
-      tmp
-    );
-    expect(hung).toBe(true);
-
-    await execa(
-      'docker',
-      [
-        'exec',
-        CONTAINER,
-        'bash',
-        '-c',
-        'killall -u deploy sleep 2>/dev/null || true; true',
-      ],
-      { reject: false }
-    );
-
+  test('brace-grouped exec -a returns <5s with environ+cmdline markers for all startScopedNohup languages', async () => {
     const ssh = new NodeSSH();
     await ssh.connect({
       host: '127.0.0.1',
@@ -261,12 +171,16 @@ describeRealSsh('startScopedNohup real SSH completion (Docker sshd)', () => {
     });
 
     try {
+      // Same helper for FastAPI / Go / Java / .NET / Rails bodies.
       for (const fw of ['fastapi', 'go', 'spring', 'dotnet', 'rails']) {
         const deployPath = `/home/deploy/app-${fw}`;
         await ssh.execCommand(
           `mkdir -p ${deployPath} && rm -f ${deployPath}/.deployhub.pid ${deployPath}/app.log`
         );
         const cmd = fixedStartCommand(deployPath, 'sleep 3600');
+        // Shape guard: must stay brace-grouped (not bare `cd && nohup … &`).
+        expect(cmd).toMatch(/cd .+ && \{[\s\S]*nohup[\s\S]*& echo \$!/);
+
         const t0 = Date.now();
         const result = await Promise.race([
           ssh.execCommand(cmd),
