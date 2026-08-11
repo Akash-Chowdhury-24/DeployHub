@@ -1,5 +1,6 @@
 import chalk from 'chalk';
-import { loadConfig, loadEnv } from '../core/config.js';
+import { loadEnv } from '../core/config.js';
+import { loadConfigOrExit } from '../core/load-config-or-exit.js';
 import { resolveEnvTargets } from '../core/environments.js';
 import {
   rollbackToVersion,
@@ -23,7 +24,7 @@ export function registerRollbackCommand(program) {
     )
     .action(async (versionOrBuildId, opts) => {
       loadEnv();
-      const config = await loadConfig();
+      const config = await loadConfigOrExit();
       const log = createLogger('rollback');
 
       let targets;

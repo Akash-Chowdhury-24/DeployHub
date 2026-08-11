@@ -19,6 +19,7 @@ import {
   getEnvSettings,
   resolveDefaultEnvironmentName,
 } from '../core/config.js';
+import { detectDjangoWsgiPackageDir } from '../utils/python-app-target.js';
 
 /**
  * @param {string} cwd
@@ -71,21 +72,26 @@ function resolveArtifactType(config) {
  */
 function resolveBuildSettings(config) {
   if (config.projectType === 'both' && config.backend) {
+    const buildCommand = config.backend.buildCommand ?? null;
     return {
       buildOutput: config.backend.buildOutput || '.',
       framework: config.backend.framework,
       startCommand: config.backend.startCommand || null,
       port: config.backend.port || 3000,
-      buildCommand: config.backend.buildCommand ?? null,
+      buildCommand,
     };
   }
 
+  const buildCommand = config.buildCommand ?? null;
+  const isBackend = config.projectType === 'backend';
   return {
-    buildOutput: config.buildOutput || 'dist',
+    // Backend packages are source trees (or compiled jars/binaries under a known
+    // output dir when set). Never default backends to frontend-style "dist".
+    buildOutput: config.buildOutput || (isBackend ? '.' : 'dist'),
     framework: config.framework || 'node',
     startCommand: config.startCommand || null,
     port: config.port || 3000,
-    buildCommand: config.buildCommand ?? null,
+    buildCommand,
   };
 }
 
@@ -194,14 +200,47 @@ async function stageBackendArtifact(cwd, stagingDir, config) {
 
   if (['express', 'nestjs', 'fastify', 'koa', 'nextjs'].includes(framework)) {
     await copyIfExists(cwd, stagingDir, 'package.json');
-  } else if (['fastapi', 'django', 'flask'].includes(framework)) {
+    await copyIfExists(cwd, stagingDir, 'package-lock.json');
+  } else if (['fastapi', 'django', 'flask', 'python'].includes(framework)) {
+    // Source-only packages: root entrypoints + manifests (no dist/).
     await copyIfExists(cwd, stagingDir, 'requirements.txt');
-    if (framework === 'django' && (await fs.pathExists(path.join(cwd, 'manage.py')))) {
-      await copyIfExists(cwd, stagingDir, 'manage.py');
+    await copyIfExists(cwd, stagingDir, 'pyproject.toml');
+    await copyIfExists(cwd, stagingDir, 'Pipfile');
+    await copyIfExists(cwd, stagingDir, 'Pipfile.lock');
+    await copyIfExists(cwd, stagingDir, 'setup.py');
+    await copyIfExists(cwd, stagingDir, 'manage.py');
+    await copyIfExists(cwd, stagingDir, 'main.py');
+    await copyIfExists(cwd, stagingDir, 'app.py');
+    await copyIfExists(cwd, stagingDir, 'wsgi.py');
+    await copyIfExists(cwd, stagingDir, 'asgi.py');
+    await copyDirectoryIfExists(cwd, stagingDir, 'app');
+    await copyDirectoryIfExists(cwd, stagingDir, 'apps');
+    // Django project package often sits next to manage.py (e.g. config/, mysite/).
+    // `config/` is already copied above for all backends; also copy the detected
+    // package that owns wsgi.py when it is not config/app/apps.
+    if (framework === 'django') {
+      await copyDirectoryIfExists(cwd, stagingDir, 'templates');
+      await copyDirectoryIfExists(cwd, stagingDir, 'static');
+      const wsgiPkg = detectDjangoWsgiPackageDir(cwd);
+      if (
+        wsgiPkg &&
+        !['app', 'apps', 'config', 'templates', 'static', 'src'].includes(wsgiPkg)
+      ) {
+        await copyDirectoryIfExists(cwd, stagingDir, wsgiPkg);
+      }
     }
-  } else if (['laravel', 'symfony'].includes(framework)) {
+  } else if (['laravel', 'symfony', 'php'].includes(framework)) {
     await copyIfExists(cwd, stagingDir, 'composer.json');
     await copyIfExists(cwd, stagingDir, 'composer.lock');
+    await copyIfExists(cwd, stagingDir, 'artisan');
+    await copyDirectoryIfExists(cwd, stagingDir, 'app');
+    await copyDirectoryIfExists(cwd, stagingDir, 'bootstrap');
+    await copyDirectoryIfExists(cwd, stagingDir, 'public');
+    await copyDirectoryIfExists(cwd, stagingDir, 'routes');
+    await copyDirectoryIfExists(cwd, stagingDir, 'database');
+    await copyDirectoryIfExists(cwd, stagingDir, 'resources');
+    await copyDirectoryIfExists(cwd, stagingDir, 'storage');
+    await copyDirectoryIfExists(cwd, stagingDir, 'bin');
   } else if (framework === 'spring') {
     await copyIfExists(cwd, stagingDir, 'pom.xml');
     const targetDir = path.join(cwd, 'target');
@@ -226,11 +265,19 @@ async function stageBackendArtifact(cwd, stagingDir, config) {
     await copyIfExists(cwd, stagingDir, 'Gemfile');
     await copyIfExists(cwd, stagingDir, 'Gemfile.lock');
     await copyIfExists(cwd, stagingDir, 'config.ru');
+    await copyIfExists(cwd, stagingDir, 'Rakefile');
+    await copyDirectoryIfExists(cwd, stagingDir, 'app');
+    await copyDirectoryIfExists(cwd, stagingDir, 'bin');
+    await copyDirectoryIfExists(cwd, stagingDir, 'lib');
+    await copyDirectoryIfExists(cwd, stagingDir, 'db');
+    await copyDirectoryIfExists(cwd, stagingDir, 'public');
   } else {
     await copyIfExists(cwd, stagingDir, 'package.json');
     await copyIfExists(cwd, stagingDir, 'requirements.txt');
   }
 
+  // Only copy a named build-output dir when it actually exists (compiled langs).
+  // Skip '.' / 'src' — source is already staged above; never invent an empty dist/.
   if (settings.buildOutput && settings.buildOutput !== '.' && settings.buildOutput !== 'src') {
     const built = path.join(cwd, settings.buildOutput);
     if (await fs.pathExists(built) && !['target', 'bin', 'publish'].includes(settings.buildOutput)) {
@@ -309,6 +356,7 @@ export async function createArtifact(config, deployedTargets = [], cwd = process
     projectType: artifactType,
     framework: settings.framework,
     buildOutput: settings.buildOutput,
+    buildCommand: settings.buildCommand,
     startCommand: settings.startCommand,
     port: settings.port,
     generatedBy: getGeneratedByMetadata(),
@@ -320,6 +368,8 @@ export async function createArtifact(config, deployedTargets = [], cwd = process
     metadata.frontend = frontend;
     metadata.backend = {
       framework: settings.framework,
+      buildOutput: settings.buildOutput,
+      buildCommand: settings.buildCommand,
       startCommand: settings.startCommand,
       port: settings.port,
     };

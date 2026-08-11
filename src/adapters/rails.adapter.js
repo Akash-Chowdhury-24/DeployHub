@@ -40,13 +40,20 @@ function create(config, cwd) {
     },
 
     async build() {
-      const buildCommand = config.buildCommand || 'bundle exec rails assets:precompile';
-      if (!buildCommand) {
-        log.info('No build command configured, skipping');
+      // Explicit null/"" means skip (API-only Rails, etc.). Undefined keeps the
+      // conventional assets:precompile default from the Rails detector.
+      if (config.buildCommand === null || config.buildCommand === '') {
+        log.info('No build step required — skipping');
+        return;
+      }
+      const buildCommand =
+        config.buildCommand || 'bundle exec rails assets:precompile';
+      if (!String(buildCommand).trim()) {
+        log.info('No build step required — skipping');
         return;
       }
       log.info(`Running build: ${buildCommand}`);
-      const [cmd, ...args] = buildCommand.split(' ');
+      const [cmd, ...args] = String(buildCommand).split(' ');
       await execa(cmd, args, { cwd, stdio: 'inherit', shell: true });
     },
 

@@ -1,5 +1,6 @@
 import chalk from 'chalk';
-import { loadConfig, loadEnv } from '../core/config.js';
+import { loadEnv } from '../core/config.js';
+import { loadConfigOrExit } from '../core/load-config-or-exit.js';
 import { runPipeline } from '../core/pipeline.js';
 import { buildPipelineStages } from '../core/stages.js';
 
@@ -13,14 +14,7 @@ export function registerBuildCommand(program) {
     .action(async () => {
       loadEnv();
       const cwd = process.cwd();
-
-      let config;
-      try {
-        config = await loadConfig(cwd);
-      } catch (err) {
-        console.error(chalk.red(err instanceof Error ? err.message : String(err)));
-        process.exit(1);
-      }
+      const config = await loadConfigOrExit(cwd);
 
       /** @type {Record<string, unknown>} */
       const state = {};

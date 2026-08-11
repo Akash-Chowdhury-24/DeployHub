@@ -1,10 +1,10 @@
 import chalk from 'chalk';
 import inquirer from 'inquirer';
 import {
-  loadConfig,
   loadEnv,
   saveConfig,
 } from '../core/config.js';
+import { loadConfigOrExit } from '../core/load-config-or-exit.js';
 import {
   getEnabledEnvironmentNames,
   getEnvMethod,
@@ -72,7 +72,7 @@ export function registerEnvCommand(program) {
     .description('List configured environments')
     .action(async () => {
       loadEnv();
-      const config = await loadConfig();
+      const config = await loadConfigOrExit();
       const names = Object.keys(config.environments || {});
       if (names.length === 0) {
         console.log(chalk.yellow('No environments configured. Run: deployhub env add <name>'));
@@ -117,7 +117,7 @@ export function registerEnvCommand(program) {
     .action(async (rawName, opts) => {
       loadEnv();
       const cwd = process.cwd();
-      const config = await loadConfig(cwd);
+      const config = await loadConfigOrExit(cwd);
       const log = createLogger('env');
 
       const nameCheck = validateEnvironmentName(rawName, Object.keys(config.environments || {}));
@@ -233,7 +233,7 @@ export function registerEnvCommand(program) {
     .action(async (name) => {
       loadEnv();
       const cwd = process.cwd();
-      const config = await loadConfig(cwd);
+      const config = await loadConfigOrExit(cwd);
       if (!config.environments[name]) {
         console.error(chalk.red(`Environment "${name}" not found.`));
         process.exit(1);
@@ -251,7 +251,7 @@ export function registerEnvCommand(program) {
     .action(async (name) => {
       loadEnv();
       const cwd = process.cwd();
-      const config = await loadConfig(cwd);
+      const config = await loadConfigOrExit(cwd);
       if (!config.environments[name]) {
         console.error(chalk.red(`Environment "${name}" not found.`));
         process.exit(1);
@@ -269,7 +269,7 @@ export function registerEnvCommand(program) {
     .action(async (name) => {
       loadEnv();
       const cwd = process.cwd();
-      const config = await loadConfig(cwd);
+      const config = await loadConfigOrExit(cwd);
       if (!config.environments[name]) {
         console.error(chalk.red(`Environment "${name}" not found.`));
         process.exit(1);

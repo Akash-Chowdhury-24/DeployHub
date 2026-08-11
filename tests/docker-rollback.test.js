@@ -92,7 +92,7 @@ describe('ensureImageReadyForDeploy rollback options', () => {
     await fs.remove(tmp);
   });
 
-  test('skipImageReuse forces rebuild even when local image exists', async () => {
+  test('skipImageReuse reuses exact restored tag when present (no :latest retag)', async () => {
     const artifactDir = path.join(tmp, 'artifact');
     await seedFrontendArtifact(artifactDir);
 
@@ -114,15 +114,62 @@ describe('ensureImageReadyForDeploy rollback options', () => {
     const inspectCalls = mockExeca.mock.calls.filter(
       (c) => c[0] === 'docker' && c[1]?.[0] === 'image' && c[1]?.[1] === 'inspect'
     );
-    expect(inspectCalls).toHaveLength(0);
+    expect(inspectCalls.length).toBeGreaterThanOrEqual(1);
+    expect(inspectCalls[0][1]).toEqual(['image', 'inspect', restored]);
 
+    const buildCalls = mockExeca.mock.calls.filter(
+      (c) => c[0] === 'docker' && c[1]?.[0] === 'build'
+    );
+    expect(buildCalls).toHaveLength(0);
+
+    const tagCalls = mockExeca.mock.calls.filter(
+      (c) =>
+        c[0] === 'docker' &&
+        c[1]?.[0] === 'tag' &&
+        c[1]?.[1] === 'myapp:current-live-tag'
+    );
+    expect(tagCalls).toHaveLength(0);
+
+    expect(log.info).toHaveBeenCalledWith(
+      expect.stringContaining('Using restored image')
+    );
+  });
+
+  test('skipImageReuse rebuilds from artifact when restored tag is missing locally', async () => {
+    mockExeca.mockImplementation(async (cmd, args = []) => {
+      if (await runRealExtractIfNeeded(cmd, args)) {
+        return { stdout: '' };
+      }
+      if (cmd === 'docker' && args[0] === 'image' && args[1] === 'inspect') {
+        const err = new Error('No such image');
+        throw err;
+      }
+      return { stdout: '' };
+    });
+
+    const artifactDir = path.join(tmp, 'artifact');
+    await seedFrontendArtifact(artifactDir);
+
+    const restored = 'myapp:1.0.0-restored123';
+    const ctx = createDockerImageDeployContext(
+      { project: 'myapp', projectType: 'frontend', framework: 'react' },
+      { DOCKER_IMAGE_TAG: 'current-live-tag' },
+      log
+    );
+
+    const result = await ctx.ensureImageReadyForDeploy(artifactDir, {
+      fullImage: restored,
+      skipImageReuse: true,
+    });
+
+    expect(result.fullImage).toBe(restored);
     expect(mockExeca).toHaveBeenCalledWith(
       'docker',
       ['build', '-t', restored, '.'],
       expect.objectContaining({ cwd: expect.stringContaining('_docker_build') })
     );
     expect(log.info).toHaveBeenCalledWith(
-      expect.stringContaining('Skipping local image reuse')
+      expect.stringContaining('not found locally')
     );
   });
 
@@ -160,6 +207,10 @@ describe('docker provider rollback', () => {
       if (await runRealExtractIfNeeded(cmd, args)) {
         return { stdout: '' };
       }
+      // Restored buildId image is not local → fall through to artifact rebuild.
+      if (cmd === 'docker' && args[0] === 'image' && args[1] === 'inspect') {
+        throw new Error('No such image');
+      }
       return { stdout: '' };
     });
   });
@@ -168,7 +219,7 @@ describe('docker provider rollback', () => {
     await fs.remove(tmp);
   });
 
-  test('rollback tags with restored buildId and skips image reuse', async () => {
+  test('rollback tags with restored buildId; rebuilds from artifact when tag missing', async () => {
     const artifactDir = path.join(tmp, 'artifact');
     await seedFrontendArtifact(artifactDir);
 
@@ -198,7 +249,7 @@ describe('docker provider rollback', () => {
     const inspectCalls = mockExeca.mock.calls.filter(
       (c) => c[0] === 'docker' && c[1]?.[0] === 'image' && c[1]?.[1] === 'inspect'
     );
-    expect(inspectCalls).toHaveLength(0);
+    expect(inspectCalls.length).toBeGreaterThanOrEqual(1);
   });
 
   test('rollback requires buildId', async () => {
@@ -254,6 +305,9 @@ describe('docker provider rollback', () => {
     mockExeca.mockImplementation(async (cmd, args = []) => {
       if (await runRealExtractIfNeeded(cmd, args)) {
         return { stdout: '' };
+      }
+      if (cmd === 'docker' && args[0] === 'image' && args[1] === 'inspect') {
+        throw new Error('No such image');
       }
       return { stdout: '' };
     });

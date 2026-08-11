@@ -93,14 +93,8 @@ export function registerStorageCommand(program) {
     .description('List configured storage providers and status')
     .action(async () => {
       loadEnv();
-      let config;
-      try {
-        const { loadConfig } = await import('../core/config.js');
-        config = await loadConfig();
-      } catch {
-        console.error(chalk.red('Run deployhub init first'));
-        process.exit(1);
-      }
+      const { loadConfigOrExit } = await import('../core/load-config-or-exit.js');
+      const config = await loadConfigOrExit();
 
       const results = await testAllProviders(config.storage);
       console.log(chalk.bold('\nStorage Providers:\n'));

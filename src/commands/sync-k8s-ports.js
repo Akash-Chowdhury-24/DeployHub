@@ -1,5 +1,6 @@
 import chalk from 'chalk';
-import { loadConfig, loadEnv } from '../core/config.js';
+import { loadEnv } from '../core/config.js';
+import { loadConfigOrExit } from '../core/load-config-or-exit.js';
 import { resolveContainerPort } from '../utils/dockerfile-expose.js';
 import {
   getDefaultKubernetesManifestPaths,
@@ -23,7 +24,7 @@ export function registerSyncK8sPortsCommand(program) {
     .action(async () => {
       loadEnv();
       const cwd = process.cwd();
-      const config = await loadConfig(cwd);
+      const config = await loadConfigOrExit(cwd);
 
       const { deploymentPath, servicePath } = getDefaultKubernetesManifestPaths(cwd);
       const hasDeployment = await fs.pathExists(deploymentPath);

@@ -17,7 +17,12 @@ import { registerSyncWorkflowsCommand } from '../commands/sync-workflows.js';
 import { registerSyncK8sPortsCommand } from '../commands/sync-k8s-ports.js';
 import { registerEnvCommand } from '../commands/env.js';
 import { formatVersionOutput, printBanner, shouldShowBanner } from '../utils/author.js';
+import {
+  installCliFatalHandlers,
+  reportFatalCliError,
+} from './fatal-error.js';
 
+installCliFatalHandlers();
 loadEnv();
 
 const program = new Command();
@@ -48,4 +53,7 @@ registerSyncWorkflowsCommand(program);
 registerSyncK8sPortsCommand(program);
 registerEnvCommand(program);
 
-program.parse();
+program.parseAsync(process.argv).catch((err) => {
+  reportFatalCliError(err);
+  process.exit(1);
+});

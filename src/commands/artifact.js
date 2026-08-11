@@ -1,5 +1,6 @@
 import chalk from 'chalk';
-import { loadConfig, loadEnv } from '../core/config.js';
+import { loadEnv } from '../core/config.js';
+import { loadConfigOrExit } from '../core/load-config-or-exit.js';
 import {
   createArtifact,
   listLocalArtifacts,
@@ -25,7 +26,7 @@ export function registerArtifactCommand(program) {
     .description('Create artifact from current build output')
     .action(async () => {
       loadEnv();
-      const config = await loadConfig();
+      const config = await loadConfigOrExit();
       const result = await createArtifact(config, [], process.cwd());
       console.log(chalk.green(`Artifact created: ${result.artifactDir}`));
     });
@@ -36,7 +37,7 @@ export function registerArtifactCommand(program) {
     .option('--remote', 'Also list builds from remote history.json')
     .action(async (opts) => {
       loadEnv();
-      const config = await loadConfig();
+      const config = await loadConfigOrExit();
       const artifacts = await listLocalArtifacts();
 
       console.log(chalk.bold('\nLocal artifacts:\n'));
@@ -91,7 +92,7 @@ export function registerArtifactCommand(program) {
     .description('Download and extract an artifact by buildId or legacy semver')
     .action(async (versionOrBuildId) => {
       loadEnv();
-      const config = await loadConfig();
+      const config = await loadConfigOrExit();
       const cwd = process.cwd();
       const needle = String(versionOrBuildId).replace(/^v/i, '');
 

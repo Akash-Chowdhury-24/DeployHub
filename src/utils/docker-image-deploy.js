@@ -319,9 +319,17 @@ export function createDockerImageDeployContext(config, env = process.env, log) {
 
     let reused = false;
     if (!options.skipImageReuse) {
+      // Normal deploy: prefer pipeline image (exact tag, then :latest retag).
       reused = await ensureImageFromPipeline(imageRef);
+    } else if (await imageExistsLocally(imageRef)) {
+      // Rollback: never retag :latest onto an older buildId, but DO use the
+      // exact restored buildId image if it is already present locally.
+      log.info(`Using restored image ${imageRef} (skipImageReuse — no :latest retag)`);
+      reused = true;
     } else {
-      log.info(`Skipping local image reuse — rebuilding ${imageRef} from artifact`);
+      log.info(
+        `Target image ${imageRef} not found locally — attempting rebuild from artifact`
+      );
     }
 
     let ranCompose = false;

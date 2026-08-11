@@ -6,10 +6,11 @@ function detect(cwd = process.cwd()) {
 }
 
 function getInfo(cwd = process.cwd()) {
+  // Composer install belongs in the install stage, not a compile/build step.
   return {
     framework: 'php',
-    buildCommand: 'composer install --no-dev --optimize-autoloader',
-    buildOutput: 'public',
+    buildCommand: null,
+    buildOutput: '.',
     hasDocker: fs.existsSync(path.join(cwd, 'Dockerfile')),
   };
 }

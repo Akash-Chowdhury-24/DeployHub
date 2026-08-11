@@ -1,5 +1,9 @@
 import fs from 'fs-extra';
 import path from 'path';
+import {
+  detectDjangoWsgiTarget,
+  detectFlaskAppTarget,
+} from '../utils/python-app-target.js';
 
 /**
  * @typedef {Object} BackendDetectorResult
@@ -76,6 +80,7 @@ const FRAMEWORKS = {
     defaults: {
       language: 'python',
       buildCommand: null,
+      // Fallback only — getBackendInfo overrides via detectDjangoWsgiTarget(cwd)
       startCommand: 'gunicorn config.wsgi:application --bind 0.0.0.0:8000',
       buildOutput: '.',
       testCommand: 'python manage.py test',
@@ -87,6 +92,7 @@ const FRAMEWORKS = {
     defaults: {
       language: 'python',
       buildCommand: null,
+      // Fallback only — getBackendInfo overrides via detectFlaskAppTarget(cwd)
       startCommand: 'gunicorn app:app --bind 0.0.0.0:5000',
       buildOutput: '.',
       testCommand: 'pytest',
@@ -261,11 +267,20 @@ export function getBackendInfo(framework, cwd = process.cwd()) {
   let buildCommand = def.defaults.buildCommand;
   let startCommand = def.defaults.startCommand;
   let testCommand = def.defaults.testCommand;
+  const port = def.defaults.port;
 
   if (def.defaults.language === 'node') {
     if (scripts.build) buildCommand = 'npm run build';
     if (scripts.start) startCommand = 'npm start';
     if (scripts.test) testCommand = 'npm test';
+  }
+
+  if (framework === 'django') {
+    const target = detectDjangoWsgiTarget(cwd);
+    startCommand = `gunicorn ${target} --bind 0.0.0.0:${port}`;
+  } else if (framework === 'flask') {
+    const target = detectFlaskAppTarget(cwd);
+    startCommand = `gunicorn ${target} --bind 0.0.0.0:${port}`;
   }
 
   return {
@@ -277,7 +292,7 @@ export function getBackendInfo(framework, cwd = process.cwd()) {
     buildOutput: def.defaults.buildOutput,
     testCommand,
     hasDocker,
-    port: def.defaults.port,
+    port,
   };
 }
 

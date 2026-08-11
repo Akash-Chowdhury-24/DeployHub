@@ -11,10 +11,11 @@ function detect(cwd = process.cwd()) {
 
 function getInfo(cwd = process.cwd()) {
   const hasDocker = fs.existsSync(path.join(cwd, 'Dockerfile'));
+  // Deps install belongs in the install stage (pip), not a compile/build step.
   return {
     framework: 'python',
-    buildCommand: 'pip install -r requirements.txt',
-    buildOutput: 'dist',
+    buildCommand: null,
+    buildOutput: '.',
     hasDocker,
   };
 }

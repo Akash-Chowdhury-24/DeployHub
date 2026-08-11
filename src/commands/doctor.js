@@ -4,7 +4,8 @@ import fs from 'fs-extra';
 import path from 'path';
 import os from 'os';
 import axios from 'axios';
-import { loadConfig, loadEnv, getEnvMethod, getEnvSettings } from '../core/config.js';
+import { loadEnv, getEnvMethod, getEnvSettings } from '../core/config.js';
+import { loadConfigOrExit } from '../core/load-config-or-exit.js';
 import {
   isEnvEnabled,
   resolveDefaultEnvironmentName,
@@ -613,6 +614,41 @@ async function runBackendProcessChecks(config, envName, deployType = 'ssh') {
 
   if (PYTHON_FRAMEWORKS.has(framework)) {
     checks.push(
+      await runCheck('Python 3', async () => {
+        const result = await provider.runRemoteCheck('command -v python3');
+        if (result.pass) {
+          return { name: 'Python 3', pass: true, message: 'python3 found on PATH' };
+        }
+        return {
+          name: 'Python 3',
+          pass: false,
+          message:
+            'python3 not found on PATH — install it on the server ' +
+            '(Amazon Linux: sudo yum install -y python3; Ubuntu: sudo apt-get install -y python3)',
+        };
+      })
+    );
+
+    checks.push(
+      await runCheck('pip', async () => {
+        // Deploy runs `pip install -r requirements.txt`; accept pip3 or pip.
+        const result = await provider.runRemoteCheck(
+          'command -v pip3 >/dev/null 2>&1 || command -v pip >/dev/null 2>&1'
+        );
+        if (result.pass) {
+          return { name: 'pip', pass: true, message: 'pip3 or pip found on PATH' };
+        }
+        return {
+          name: 'pip',
+          pass: false,
+          message:
+            'pip/pip3 not found on PATH — install it on the server ' +
+            '(Amazon Linux: sudo yum install -y python3-pip; Ubuntu: sudo apt-get install -y python3-pip)',
+        };
+      })
+    );
+
+    checks.push(
       await runCheck('gunicorn', async () => {
         const result = await provider.runRemoteCheck('which gunicorn || gunicorn --version');
         if (result.pass) {
@@ -705,6 +741,8 @@ export function registerDoctorCommand(program) {
     .action(async (opts) => {
       loadEnv();
       const cwd = process.cwd();
+      // Doctor requires a project config — fail cleanly before any checks (no null.storage crash).
+      const config = await loadConfigOrExit(cwd);
       /** @type {CheckResult[]} */
       const results = [];
       /** @type {Set<string>} names of checks that must not fail the summary */
@@ -746,17 +784,6 @@ export function registerDoctorCommand(program) {
 
       results.push(
         await runCheck('Build command', async () => {
-          let config;
-          try {
-            config = await loadConfig(cwd);
-          } catch {
-            return {
-              name: 'Build command',
-              pass: false,
-              message: 'deployhub.config.json not found — run deployhub init',
-            };
-          }
-
           if (config.projectType === 'backend' && !config.buildCommand) {
             return {
               name: 'Build command',
@@ -794,14 +821,7 @@ export function registerDoctorCommand(program) {
         })
       );
 
-      let config = null;
-      try {
-        config = await loadConfig(cwd);
-      } catch {
-        // handled above
-      }
-
-      if (config) {
+      {
         for (const provider of config.storage || []) {
           const label = provider.charAt(0).toUpperCase() + provider.slice(1);
           if (provider === 'aws') {
@@ -946,10 +966,6 @@ export function registerDoctorCommand(program) {
 
       results.push(
         await runCheck('Secrets', async () => {
-          if (!config) {
-            return { name: 'Secrets', pass: false, message: 'No config found' };
-          }
-
           /** @type {string[]} */
           const required = [];
           for (const provider of config.storage || []) {
@@ -984,7 +1000,7 @@ export function registerDoctorCommand(program) {
       );
 
       // Explicit CI-prefixed secret reminders for non-grandfathered environments
-      if (config) {
+      {
         const inCi = process.env.GITHUB_ACTIONS === 'true' || process.env.CI === 'true';
         for (const envName of Object.keys(config.environments || {})) {
           const env = config.environments[envName];

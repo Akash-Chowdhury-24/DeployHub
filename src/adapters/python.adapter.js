@@ -34,8 +34,13 @@ function create(config, cwd) {
     },
 
     async build() {
-      log.info(`Running: ${config.buildCommand}`);
-      const [cmd, ...args] = config.buildCommand.split(' ');
+      const buildCommand = config.buildCommand;
+      if (buildCommand == null || String(buildCommand).trim() === '') {
+        log.info('No build step required — skipping');
+        return;
+      }
+      log.info(`Running: ${buildCommand}`);
+      const [cmd, ...args] = String(buildCommand).split(' ');
       await execa(cmd, args, { cwd, stdio: 'inherit', shell: true });
     },
 

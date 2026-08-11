@@ -12,6 +12,7 @@ import {
 } from '../../utils/nginx.js';
 import { resolvePm2AppName } from '../../utils/pm2-app-name.js';
 import { shellQuote, formatRemoteCommandFailure } from '../../utils/shell-quote.js';
+import { extractGunicornTarget } from '../../utils/python-app-target.js';
 
 /** @type {Set<string>} */
 const NODE_FRAMEWORKS = new Set(['express', 'nestjs', 'fastify', 'koa', 'nextjs', 'node']);
@@ -172,7 +173,42 @@ export function createSshProvider(config, envName, env = process.env) {
   }
 
   /**
+   * After starting a backend, wait briefly and confirm the PID file's process
+   * is still alive. Not a health check — only catches immediate crash.
+   * `port` is closed over from createSshProvider (settings.port / config.port).
+   *
+   * @param {import('node-ssh').NodeSSH} ssh
+   * @param {string} targetPath
+   * @param {string} [logFile] — defaults to targetPath/app.log
+   */
+  async function assertPidAliveAfterStart(ssh, targetPath, logFile) {
+    const pidFile = `${targetPath}/.deployhub.pid`;
+    const log = logFile || `${targetPath}/app.log`;
+    const verifyCmd =
+      `sleep 2; ` +
+      `pid="$(cat ${sh(pidFile)} 2>/dev/null | tr -cd '0-9')"; ` +
+      `if [ -z "$pid" ] || [ ! -d "/proc/$pid" ]; then ` +
+      `echo "DEPLOYHUB_PROCESS_DIED: process exited immediately after start (pidfile=${sh(pidFile)}). Last lines of ${sh(log)}:"; ` +
+      `tail -n 40 ${sh(log)} 2>/dev/null || echo "(no app.log)"; ` +
+      `exit 1; ` +
+      `fi`;
+
+    try {
+      await exec(ssh, verifyCmd);
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      throw new Error(
+        `Backend process for "${appName}" died immediately after start at ${targetPath}. ` +
+          `Check dependencies, entrypoint, and port ${port}.\n${detail}`
+      );
+    }
+  }
+
+  /**
    * Start a nohup process with DEPLOYHUB_APP marker and write PID file.
+   * After launch, wait briefly and confirm the PID is still alive — otherwise
+   * surface app.log and fail the deploy (nohup+echo $! alone always "succeeds").
+   *
    * @param {import('node-ssh').NodeSSH} ssh
    * @param {string} targetPath
    * @param {string} command — command body after `nohup` (no trailing &)
@@ -184,6 +220,7 @@ export function createSshProvider(config, envName, env = process.env) {
       ssh,
       `cd ${dir} && DEPLOYHUB_APP=${sh(appName)} nohup ${command} > app.log 2>&1 & echo $! > ${sh(pidFile)}`
     );
+    await assertPidAliveAfterStart(ssh, targetPath);
   }
 
   /**
@@ -234,13 +271,21 @@ export function createSshProvider(config, envName, env = process.env) {
           `uvicorn main:app --host 0.0.0.0 --port ${port}`
         );
       } else {
-        // gunicorn --daemon writes its own PID; still set DEPLOYHUB_APP for pkill fallback.
-        const appTarget =
+        // gunicorn --daemon writes the master PID to --pid (same .deployhub.pid).
+        // --error-logfile + --capture-output give us a log to surface on immediate death
+        // (daemonized stdout/stderr otherwise vanish).
+        const logFile = `${targetPath}/app.log`;
+        const fallbackTarget =
           framework === 'django' ? 'config.wsgi:application' : 'app:app';
+        const appTarget =
+          extractGunicornTarget(startCommand) || fallbackTarget;
         await exec(
           ssh,
-          `cd ${dir} && DEPLOYHUB_APP=${sh(appName)} gunicorn ${appTarget} --name ${sh(`deployhub-${appName}`)} --bind 0.0.0.0:${port} --pid ${sh(pidFile)} --daemon`
+          `cd ${dir} && DEPLOYHUB_APP=${sh(appName)} gunicorn ${appTarget} ` +
+            `--name ${sh(`deployhub-${appName}`)} --bind 0.0.0.0:${port} ` +
+            `--pid ${sh(pidFile)} --error-logfile ${sh(logFile)} --capture-output --daemon`
         );
+        await assertPidAliveAfterStart(ssh, targetPath, logFile);
       }
       return;
     }

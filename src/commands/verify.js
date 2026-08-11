@@ -1,5 +1,6 @@
 import chalk from 'chalk';
-import { loadConfig, loadEnv } from '../core/config.js';
+import { loadEnv } from '../core/config.js';
+import { loadConfigOrExit } from '../core/load-config-or-exit.js';
 import { resolveEnvTargets } from '../core/environments.js';
 import {
   anyEnvHasResolvableHealthCheckUrl,
@@ -86,7 +87,7 @@ export function registerVerifyCommand(program) {
     )
     .action(async (opts) => {
       loadEnv();
-      const config = await loadConfig();
+      const config = await loadConfigOrExit();
 
       let outcome;
       try {

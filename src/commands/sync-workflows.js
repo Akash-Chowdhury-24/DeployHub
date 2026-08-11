@@ -1,5 +1,6 @@
 import chalk from 'chalk';
-import { loadConfig, loadEnv } from '../core/config.js';
+import { loadEnv } from '../core/config.js';
+import { loadConfigOrExit } from '../core/load-config-or-exit.js';
 import { getEnabledEnvironmentNames } from '../core/environments.js';
 import {
   writeWorkflowFile,
@@ -20,7 +21,7 @@ export function registerSyncWorkflowsCommand(program) {
     .action(async () => {
       loadEnv();
       const cwd = process.cwd();
-      const config = await loadConfig(cwd);
+      const config = await loadConfigOrExit(cwd);
 
       const storage = config.storage || [];
       const environments = config.environments || {};

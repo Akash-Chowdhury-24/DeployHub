@@ -1,5 +1,6 @@
 import chalk from 'chalk';
-import { loadConfig, loadEnv } from '../core/config.js';
+import { loadEnv } from '../core/config.js';
+import { loadConfigOrExit } from '../core/load-config-or-exit.js';
 import { resolveEnvTargets } from '../core/environments.js';
 import { runPipeline } from '../core/pipeline.js';
 import { listLocalArtifacts } from '../artifact/engine.js';
@@ -26,7 +27,7 @@ export function registerDeployCommand(program) {
     .action(async (opts) => {
       loadEnv();
       const cwd = process.cwd();
-      const config = await loadConfig(cwd);
+      const config = await loadConfigOrExit(cwd);
       const log = createLogger('deploy');
 
       let targets;

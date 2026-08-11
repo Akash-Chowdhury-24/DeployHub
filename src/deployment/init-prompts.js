@@ -24,6 +24,32 @@ export const SERVER_DEPLOY_TYPES = [
 
 const SSH_BASED = ['ssh', 'ec2', 'azure-vm', 'gcp-vm'];
 
+const NODE_PM2_FRAMEWORKS = new Set([
+  'express',
+  'nestjs',
+  'fastify',
+  'koa',
+  'nextjs',
+  'node',
+]);
+
+/**
+ * User-facing label for the backend process identity field (`appName`).
+ * Node backends use PM2; other languages use DEPLOYHUB_APP + PID files.
+ *
+ * @param {string|undefined|null} framework
+ * @param {string} projectName
+ * @param {'frontend'|'backend'|'both'} projectType
+ * @returns {string}
+ */
+export function backendProcessNamePromptMessage(framework, projectName, projectType) {
+  const backendFramework = String(framework || '').toLowerCase();
+  const usesPm2 = !backendFramework || NODE_PM2_FRAMEWORKS.has(backendFramework);
+  const example = projectType === 'both' ? `${projectName}-api` : projectName;
+  return usesPm2
+    ? `PM2 process name for your backend (e.g. ${example}):`
+    : `Process name for your backend (identifies this app's process on the server, e.g. ${example}):`;
+}
 /**
  * Prompt for one environment's deployment method + method-specific config.
  * Shared by `deployhub init` and `deployhub env add`.
@@ -427,7 +453,11 @@ async function promptSshBasedDeployment(base, projectName, projectType, backendC
     questions.push({
       type: 'input',
       name: 'appName',
-      message: `PM2 process name for your backend (e.g. ${projectName}-api):`,
+      message: backendProcessNamePromptMessage(
+        /** @type {string|undefined} */ (backendConfig?.framework),
+        projectName,
+        projectType
+      ),
       default: projectType === 'both' ? `${projectName}-api` : projectName,
     });
   }

@@ -144,6 +144,8 @@ export function buildPipelineStages(config, cwd, state) {
           return;
         }
 
+        // Adapters themselves null-guard buildCommand; this stage always
+        // invokes build() so interpreted backends can log the skip cleanly.
         const adapter = getAdapter(ctx.config.framework, ctx.config, ctx.cwd);
         await adapter.build();
       },

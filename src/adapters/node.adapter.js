@@ -50,13 +50,13 @@ function create(config, cwd) {
         (config.projectType === 'both' ? config.frontend?.buildCommand : null) ||
         (config.projectType === 'backend' ? config.backend?.buildCommand : null);
 
-      if (!buildCommand) {
-        log.info('No build command configured, skipping');
+      if (buildCommand == null || String(buildCommand).trim() === '') {
+        log.info('No build step required — skipping');
         return;
       }
 
       log.info(`Running build: ${buildCommand}`);
-      const [cmd, ...args] = buildCommand.split(' ');
+      const [cmd, ...args] = String(buildCommand).split(' ');
       await execa(cmd, args, { cwd, stdio: 'inherit', shell: true });
     },
 
