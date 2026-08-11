@@ -55,6 +55,14 @@ export function createSshProvider(config, envName, env = process.env) {
 
   const log = createLogger('ssh');
 
+  // Defense-in-depth: never let a stuck SSH channel hang CI indefinitely.
+  // Override with DEPLOYHUB_SSH_EXEC_TIMEOUT_MS (ms). Backend start/stop uses a shorter bound.
+  const defaultExecTimeoutMs = Number(env.DEPLOYHUB_SSH_EXEC_TIMEOUT_MS) || 120_000;
+  const startStopTimeoutMs = Math.min(
+    defaultExecTimeoutMs,
+    Number(env.DEPLOYHUB_SSH_START_TIMEOUT_MS) || 60_000
+  );
+
   async function connect() {
     if (!host || !user) {
       throw new Error(
@@ -95,10 +103,33 @@ export function createSshProvider(config, envName, env = process.env) {
   /**
    * @param {import('node-ssh').NodeSSH} ssh
    * @param {string} command
+   * @param {{ timeoutMs?: number }} [opts]
    */
-  async function exec(ssh, command) {
+  async function exec(ssh, command, opts = {}) {
+    const timeoutMs = opts.timeoutMs ?? defaultExecTimeoutMs;
     log.info(`$ ${command}`);
-    const result = await ssh.execCommand(command);
+
+    /** @type {ReturnType<typeof setTimeout> | undefined} */
+    let timer;
+    const timeoutPromise = new Promise((_, reject) => {
+      timer = setTimeout(() => {
+        reject(
+          new Error(
+            `SSH command timed out after ${timeoutMs}ms on ${user}@${host}. ` +
+              `The remote command may still be running — check the server. ` +
+              `Command: ${command.length > 240 ? `${command.slice(0, 240)}…` : command}`
+          )
+        );
+      }, timeoutMs);
+    });
+
+    let result;
+    try {
+      result = await Promise.race([ssh.execCommand(command), timeoutPromise]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+
     if (result.code !== 0 && result.code !== null) {
       const message = formatRemoteCommandFailure(
         command,
@@ -110,6 +141,47 @@ export function createSshProvider(config, envName, env = process.env) {
       throw new Error(message);
     }
     return result;
+  }
+
+  /**
+   * Exact marker match in a null-delimited /proc file (cmdline or environ).
+   * Uses grep -xF so DEPLOYHUB_APP=myapi does not match DEPLOYHUB_APP=myapi-staging.
+   *
+   * @param {string} procFileExpr — e.g. `/proc/$pid/environ` or `$proc/cmdline`
+   * @param {string} marker — already shell-quoted
+   */
+  function procHasExactMarker(procFileExpr, marker) {
+    return (
+      `tr '\\0' '\\n' < ${procFileExpr} 2>/dev/null | grep -qxF ${marker}`
+    );
+  }
+
+  /**
+   * Kill every process whose environ or cmdline contains our exact env/JVM marker.
+   * Replaces `pkill -f DEPLOYHUB_APP=…` which only searches cmdline — and
+   * `VAR=value nohup cmd` puts the marker in environ only, so orphans from
+   * interrupted deploys (no pidfile) were never found.
+   *
+   * Safe against PID reuse: an unrelated process will not carry our marker.
+   *
+   * @param {string} markerEnvQ — shell-quoted `DEPLOYHUB_APP=…`
+   * @param {string} markerJvmQ — shell-quoted `deployhub.app=…`
+   * @param {string} markerJvmFlagQ — shell-quoted `-Ddeployhub.app=…`
+   */
+  function killByExactMarkersCmd(markerEnvQ, markerJvmQ, markerJvmFlagQ) {
+    return (
+      `for proc in /proc/[0-9]*; do ` +
+        `pid="\${proc##*/}"; ` +
+        `matched=0; ` +
+        `if [ -r "$proc/environ" ] && ${procHasExactMarker('"$proc/environ"', markerEnvQ)}; then matched=1; fi; ` +
+        `if [ "$matched" -eq 0 ] && [ -r "$proc/cmdline" ]; then ` +
+          `if ${procHasExactMarker('"$proc/cmdline"', markerEnvQ)} ` +
+          `|| ${procHasExactMarker('"$proc/cmdline"', markerJvmFlagQ)} ` +
+          `|| ${procHasExactMarker('"$proc/cmdline"', markerJvmQ)}; then matched=1; fi; ` +
+        `fi; ` +
+        `if [ "$matched" -eq 1 ]; then kill "$pid" 2>/dev/null || true; fi; ` +
+      `done`
+    );
   }
 
   /**
@@ -141,7 +213,9 @@ export function createSshProvider(config, envName, env = process.env) {
    * PID-file kill is gated: we only signal a PID if /proc shows our
    * DEPLOYHUB_APP / deployhub.app marker in cmdline or environ. A stale PID
    * reused by an unrelated process is left alone (file still removed).
-   * Marker-based pkill remains the primary stop for live processes.
+   *
+   * Fallback scans /proc/[pid]/environ (and cmdline) for the exact marker -
+   * `pkill -f` cannot see env-only markers from `VAR=value cmd` starts.
    *
    * @param {import('node-ssh').NodeSSH} ssh
    * @param {string} targetPath
@@ -150,26 +224,35 @@ export function createSshProvider(config, envName, env = process.env) {
     const pidFile = `${targetPath}/.deployhub.pid`;
     const markerEnv = `DEPLOYHUB_APP=${appName}`;
     const markerJvm = `deployhub.app=${appName}`;
-    // Verify-then-kill: only signal a PID if /proc shows our marker in cmdline
-    // or environ. A stale PID reused by an unrelated process is left alone
-    // (the pidfile is still removed so the next start writes a fresh one).
+    const markerEnvQ = sh(markerEnv);
+    const markerJvmQ = sh(markerJvm);
+    const markerJvmFlagQ = sh(`-D${markerJvm}`);
+
+    // Verify-then-kill: only signal a PID if /proc shows our exact marker.
+    // Exact (-xF) match so DEPLOYHUB_APP=myapi does not hit myapi-staging.
     await exec(
       ssh,
       `if [ -f ${sh(pidFile)} ]; then ` +
         `pid="$(cat ${sh(pidFile)} 2>/dev/null | tr -cd '0-9')"; ` +
-        `if [ -n "$pid" ] && [ -r "/proc/$pid/cmdline" ]; then ` +
-          `if tr '\\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | grep -q -F ${sh(markerEnv)} ` +
-          `|| tr '\\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | grep -q -F ${sh(markerJvm)} ` +
-          `|| { [ -r "/proc/$pid/environ" ] && tr '\\0' ' ' < "/proc/$pid/environ" 2>/dev/null | grep -q -F ${sh(markerEnv)}; }; then ` +
-            `kill "$pid" 2>/dev/null || true; ` +
+        `if [ -n "$pid" ] && [ -d "/proc/$pid" ]; then ` +
+          `matched=0; ` +
+          `if [ -r "/proc/$pid/environ" ] && ${procHasExactMarker(`"/proc/$pid/environ"`, markerEnvQ)}; then matched=1; fi; ` +
+          `if [ "$matched" -eq 0 ] && [ -r "/proc/$pid/cmdline" ]; then ` +
+            `if ${procHasExactMarker(`"/proc/$pid/cmdline"`, markerEnvQ)} ` +
+            `|| ${procHasExactMarker(`"/proc/$pid/cmdline"`, markerJvmFlagQ)} ` +
+            `|| ${procHasExactMarker(`"/proc/$pid/cmdline"`, markerJvmQ)}; then matched=1; fi; ` +
           `fi; ` +
+          `if [ "$matched" -eq 1 ]; then kill "$pid" 2>/dev/null || true; fi; ` +
         `fi; ` +
         `rm -f ${sh(pidFile)}; ` +
-      `fi`
+      `fi`,
+      { timeoutMs: startStopTimeoutMs }
     );
-    // Marker match — covers lost PID files / processes without a readable pidfile.
-    await exec(ssh, `pkill -f ${sh(markerEnv)} || true`);
-    await exec(ssh, `pkill -f ${sh(markerJvm)} || true`);
+
+    // Orphan fallback: no/stale pidfile — find by exact marker in environ or cmdline.
+    await exec(ssh, killByExactMarkersCmd(markerEnvQ, markerJvmQ, markerJvmFlagQ), {
+      timeoutMs: startStopTimeoutMs,
+    });
   }
 
   /**
@@ -194,7 +277,7 @@ export function createSshProvider(config, envName, env = process.env) {
       `fi`;
 
     try {
-      await exec(ssh, verifyCmd);
+      await exec(ssh, verifyCmd, { timeoutMs: startStopTimeoutMs });
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err);
       throw new Error(
@@ -206,8 +289,9 @@ export function createSshProvider(config, envName, env = process.env) {
 
   /**
    * Start a nohup process with DEPLOYHUB_APP marker and write PID file.
-   * After launch, wait briefly and confirm the PID is still alive — otherwise
-   * surface app.log and fail the deploy (nohup+echo $! alone always "succeeds").
+   * Marker is set in environ AND embedded as argv0 via `bash exec -a` so it
+   * appears in /proc/cmdline (pkill -f / cmdline scans can see it). Plain
+   * `VAR=value cmd` alone only puts the marker in environ.
    *
    * @param {import('node-ssh').NodeSSH} ssh
    * @param {string} targetPath
@@ -216,9 +300,13 @@ export function createSshProvider(config, envName, env = process.env) {
   async function startScopedNohup(ssh, targetPath, command) {
     const pidFile = `${targetPath}/.deployhub.pid`;
     const dir = sh(targetPath);
+    const markerArg = sh(`DEPLOYHUB_APP=${appName}`);
+    // stdin from /dev/null + redirects: avoid SSH waiting on leftover FDs.
+    // bash exec -a puts DEPLOYHUB_APP=… in argv0 of the real process after exec.
     await exec(
       ssh,
-      `cd ${dir} && DEPLOYHUB_APP=${sh(appName)} nohup ${command} > app.log 2>&1 & echo $! > ${sh(pidFile)}`
+      `cd ${dir} && DEPLOYHUB_APP=${sh(appName)} nohup bash -c 'exec -a "$0" "$@"' ${markerArg} ${command} > app.log 2>&1 </dev/null & echo $! > ${sh(pidFile)}`,
+      { timeoutMs: startStopTimeoutMs }
     );
     await assertPidAliveAfterStart(ssh, targetPath);
   }
@@ -283,7 +371,8 @@ export function createSshProvider(config, envName, env = process.env) {
           ssh,
           `cd ${dir} && DEPLOYHUB_APP=${sh(appName)} gunicorn ${appTarget} ` +
             `--name ${sh(`deployhub-${appName}`)} --bind 0.0.0.0:${port} ` +
-            `--pid ${sh(pidFile)} --error-logfile ${sh(logFile)} --capture-output --daemon`
+            `--pid ${sh(pidFile)} --error-logfile ${sh(logFile)} --capture-output --daemon`,
+          { timeoutMs: startStopTimeoutMs }
         );
         await assertPidAliveAfterStart(ssh, targetPath, logFile);
       }
@@ -306,7 +395,7 @@ export function createSshProvider(config, envName, env = process.env) {
     if (framework === 'spring' || framework === 'java') {
       await stopScopedBackendProcess(ssh, targetPath);
       // -Ddeployhub.app= embeds the env-scoped identity in the JVM command line
-      // so pkill -f DEPLOYHUB_APP=… and the PID file both target only this env.
+      // so cmdline marker scans and the PID file both target only this env.
       await startScopedNohup(
         ssh,
         targetPath,

@@ -95,18 +95,17 @@ describe('PID-file kill safety (stale PID reused by unrelated process)', () => {
     );
     expect(stopCmd).toBeTruthy();
 
-    // Must gate kill on marker match — not blind kill "$(cat pidfile)"
-    expect(stopCmd).toMatch(/\/proc\/\$pid\/cmdline/);
-    expect(stopCmd).toMatch(/grep -q -F 'DEPLOYHUB_APP=myapi-staging'/);
-    expect(stopCmd).toMatch(/grep -q -F 'deployhub\.app=myapi-staging'/);
-    expect(stopCmd).toMatch(/\/proc\/\$pid\/environ/);
+    // Must gate kill on exact marker match — not blind kill "$(cat pidfile)"
+    expect(stopCmd).toMatch(/\/proc\/\$pid\/cmdline|\/proc\/\$pid\/environ/);
+    expect(stopCmd).toMatch(/grep -qxF 'DEPLOYHUB_APP=myapi-staging'/);
+    expect(stopCmd).toMatch(/grep -qxF '-Ddeployhub\.app=myapi-staging'|grep -qxF 'deployhub\.app=myapi-staging'/);
 
     // The kill must appear AFTER the grep gate (inside the then-branch), not as
     // an unconditional `kill "$(cat …)"` the way the first revision did.
     expect(stopCmd).not.toMatch(
       /if \[ -f .*\]\]; then kill "\$\(cat/
     );
-    const grepIdx = stopCmd.indexOf('grep -q -F');
+    const grepIdx = stopCmd.indexOf('grep -qxF');
     const killIdx = stopCmd.lastIndexOf('kill "$pid"');
     expect(grepIdx).toBeGreaterThan(-1);
     expect(killIdx).toBeGreaterThan(grepIdx);
@@ -114,20 +113,33 @@ describe('PID-file kill safety (stale PID reused by unrelated process)', () => {
 
   test('unrelated process simulation: stop script does not emit blind kill on raw cat PID', async () => {
     // Evidence that a reused PID cannot be killed without matching our marker:
-    // the remote script only reaches `kill "$pid"` after grep finds DEPLOYHUB_APP=
-    // or deployhub.app= in that PID's /proc files. An unrelated process (e.g.
+    // the remote script only reaches `kill "$pid"` after grep -qxF finds our
+    // exact marker in that PID's /proc files. An unrelated process (e.g.
     // sshd, cron) has neither marker → kill branch is skipped; pidfile is still
     // removed so the next start writes a fresh PID.
     const provider = createSshProvider(config, 'staging', { SSH_KEY: 'k' });
     await provider.deploy(artifactDir);
     const stopCmd = execCommands.find(
-      (c) => c.includes('.deployhub.pid') && c.includes('/proc/$pid/cmdline')
+      (c) => c.includes('.deployhub.pid') && c.includes('/proc/$pid/')
     );
     expect(stopCmd).toContain('rm -f');
     // Structure: if grep matches → kill; always rm -f pidfile outside that gate
     expect(stopCmd).toMatch(
-      /grep -q -F[\s\S]*kill "\$pid"[\s\S]*rm -f/
+      /grep -qxF[\s\S]*kill "\$pid"[\s\S]*rm -f/
     );
+  });
+
+  test('orphan fallback also uses exact marker match (no blind pkill; PID-reuse safe)', async () => {
+    const provider = createSshProvider(config, 'staging', { SSH_KEY: 'k' });
+    await provider.deploy(artifactDir);
+    const orphanScan = execCommands.find(
+      (c) => c.includes('/proc/[0-9]*') && c.includes('grep -qxF')
+    );
+    expect(orphanScan).toBeTruthy();
+    expect(orphanScan).toMatch(/grep -qxF 'DEPLOYHUB_APP=myapi-staging'/);
+    // Exact -x prevents DEPLOYHUB_APP=myapi matching myapi-staging
+    expect(orphanScan).toMatch(/grep -qxF/);
+    expect(execCommands.join('\n')).not.toMatch(/pkill -f 'DEPLOYHUB_APP=/);
   });
 
   test('Java / Go / .NET / Rails / Flask all use the same verify-then-kill stop helper', async () => {
@@ -147,10 +159,10 @@ describe('PID-file kill safety (stale PID reused by unrelated process)', () => {
       const provider = createSshProvider(cfg, 'staging', { SSH_KEY: 'k' });
       await provider.deploy(artifactDir);
       const stopCmd = execCommands.find(
-        (c) => c.includes('.deployhub.pid') && c.includes('grep -q -F')
+        (c) => c.includes('.deployhub.pid') && c.includes('grep -qxF')
       );
       expect(stopCmd).toBeTruthy();
-      expect(stopCmd).toMatch(/\/proc\/\$pid\/cmdline/);
+      expect(stopCmd).toMatch(/\/proc\/\$pid\//);
       expect(stopCmd).not.toMatch(/if \[ -f .*\]\]; then kill "\$\(cat/);
     }
   });

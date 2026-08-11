@@ -100,7 +100,7 @@ describe('startScopedNohup immediate-death detection', () => {
     );
 
     const joined = execCommands.join('\n');
-    expect(joined).toMatch(/nohup uvicorn main:app/);
+    expect(joined).toMatch(/nohup.*uvicorn main:app/);
     expect(joined).toMatch(/sleep 2/);
     expect(joined).toMatch(/DEPLOYHUB_PROCESS_DIED|\/proc\/\$pid/);
   });
@@ -137,7 +137,7 @@ describe('startScopedNohup immediate-death detection', () => {
     await expect(provider.deploy(artifactDir)).rejects.toThrow(
       /died immediately after start|ModuleNotFoundError/
     );
-    expect(execCommands.join('\n')).toMatch(/nohup \.\/bin\/app/);
+    expect(execCommands.join('\n')).toMatch(/nohup.*\.\/bin\/app/);
     expect(execCommands.join('\n')).toMatch(/sleep 2/);
   });
 
