@@ -71,6 +71,7 @@ export function resolveFallbackContainerPort(config) {
   if (framework === 'go') return 8080;
   if (framework === 'dotnet') return 5000;
   if (framework === 'rails') return 3000;
+  if (framework === 'ruby') return 9292;
 
   // nextjs, nestjs, express, and other Node backends
   return 3000;

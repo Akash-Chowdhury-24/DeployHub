@@ -44,7 +44,23 @@ describe('generateEnvExampleContent', () => {
 
     expect(content).toContain('# AWS EC2 Deployment');
     expect(content).toContain('EC2_INSTANCE_ID=');
+    expect(content).toContain('EC2_LOOKUP_AWS_ACCESS_KEY_ID=');
     expect(content).toContain('SSH_APP_NAME=');
+  });
+
+  test('single-environment project emits each deploy section exactly once', () => {
+    const content = generateEnvExampleContent(
+      ['aws'],
+      ['production'],
+      { production: { type: 'ec2', host: '1.2.3.4', user: 'ec2-user' } },
+      { projectType: 'backend', project: 'my-api', port: 3000 }
+    );
+
+    const sectionHeaders = [...content.matchAll(/^# (AWS S3|AWS EC2 Deployment)\b/gm)].map(
+      (m) => m[1]
+    );
+    expect(sectionHeaders.filter((h) => h === 'AWS S3')).toHaveLength(1);
+    expect(sectionHeaders.filter((h) => h === 'AWS EC2 Deployment')).toHaveLength(1);
   });
 
   test('includes Kubernetes variables with comments', () => {

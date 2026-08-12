@@ -13,7 +13,7 @@ import {
 import { loadEnvArtifactHistory } from '../storage/index.js';
 import { testProvider } from '../storage/index.js';
 import { getDeploymentProvider } from '../deployment/index.js';
-import { PROVIDER_ENV_MAP, getRollbackWorkflowDoctorCheck, getWorkflowDriftDoctorChecks } from '../utils/github-actions.js';
+import { PROVIDER_ENV_MAP, STORAGE_PROVIDER_IDS, getRollbackWorkflowDoctorCheck, getWorkflowDriftDoctorChecks } from '../utils/github-actions.js';
 import { printDoctorFooter } from '../utils/author.js';
 import { createLocalProvider } from '../storage/providers/local.js';
 import {
@@ -561,9 +561,12 @@ export async function runDeploymentChecks(config, envName, envConfig) {
   if (deployType === 'ec2' && process.env.EC2_INSTANCE_ID) {
     checks.push(
       await runCheck('EC2 API', async () => {
-        const missing = ['AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_REGION'].filter(
-          (k) => !process.env[k]
-        );
+        const required = [
+          'EC2_LOOKUP_AWS_ACCESS_KEY_ID',
+          'EC2_LOOKUP_AWS_SECRET_ACCESS_KEY',
+          'EC2_LOOKUP_AWS_REGION',
+        ];
+        const missing = required.filter((k) => !process.env[k]);
         if (missing.length > 0) {
           return {
             name: 'EC2 API',
@@ -969,6 +972,7 @@ export function registerDoctorCommand(program) {
           /** @type {string[]} */
           const required = [];
           for (const provider of config.storage || []) {
+            if (!STORAGE_PROVIDER_IDS.has(provider)) continue;
             const keys = PROVIDER_ENV_MAP[provider] || [];
             required.push(...keys);
           }

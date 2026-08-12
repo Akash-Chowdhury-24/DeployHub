@@ -2,6 +2,7 @@ import {
   resolveKubeNamespace,
   isGrandfatheredKubeNamespaceEnv,
 } from '../src/utils/kube-namespace-name.js';
+import { suggestKubeNamespaceDefault } from '../src/deployment/init-prompts.js';
 
 describe('Kubernetes namespace scoping (multi-env same cluster)', () => {
   const multiConfig = {
@@ -70,5 +71,17 @@ describe('Kubernetes namespace scoping (multi-env same cluster)', () => {
       },
     };
     expect(resolveKubeNamespace(single, 'default')).toBe('solo');
+  });
+});
+
+describe('suggestKubeNamespaceDefault (init / env add prompt)', () => {
+  test('first environment suggests bare project name', () => {
+    expect(suggestKubeNamespaceDefault('myapp', 'production', [])).toBe('myapp');
+  });
+
+  test('additional environment suggests {project}-{envName}', () => {
+    expect(suggestKubeNamespaceDefault('myapp', 'staging', ['production'])).toBe(
+      'myapp-staging'
+    );
   });
 });

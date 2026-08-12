@@ -173,15 +173,19 @@ describe('multi-method Build env secret union (same bugs as 2×EC2)', () => {
 
     expect(buildEnv.SSH_HOST).toBe('${{ secrets.SSH_HOST }}');
     expect(buildEnv.SSH_KEY).toBe('${{ secrets.SSH_KEY }}');
-    expect(buildEnv.AZURE_VM_NAME).toBe('${{ secrets.AZURE_VM_NAME }}');
-    expect(buildEnv.AZURE_CLIENT_SECRET).toBe('${{ secrets.AZURE_CLIENT_SECRET }}');
+    expect(buildEnv.AZURE_VM_LOOKUP_VM_NAME).toBe(
+      '${{ secrets.AZURE_VM_LOOKUP_VM_NAME }}'
+    );
+    expect(buildEnv.AZURE_VM_LOOKUP_CLIENT_SECRET).toBe(
+      '${{ secrets.AZURE_VM_LOOKUP_CLIENT_SECRET }}'
+    );
     expect(buildEnv.PRODUCTION_SSH_HOST).toBe('${{ secrets.PRODUCTION_SSH_HOST }}');
     expect(buildEnv.PRODUCTION_SSH_KEY).toBe('${{ secrets.PRODUCTION_SSH_KEY }}');
-    expect(buildEnv.PRODUCTION_AZURE_VM_NAME).toBe(
-      '${{ secrets.PRODUCTION_AZURE_VM_NAME }}'
+    expect(buildEnv.PRODUCTION_AZURE_VM_LOOKUP_VM_NAME).toBe(
+      '${{ secrets.PRODUCTION_AZURE_VM_LOOKUP_VM_NAME }}'
     );
-    expect(buildEnv.PRODUCTION_AZURE_CLIENT_SECRET).toBe(
-      '${{ secrets.PRODUCTION_AZURE_CLIENT_SECRET }}'
+    expect(buildEnv.PRODUCTION_AZURE_VM_LOOKUP_CLIENT_SECRET).toBe(
+      '${{ secrets.PRODUCTION_AZURE_VM_LOOKUP_CLIENT_SECRET }}'
     );
     expect(buildEnv.SSH_KEY).not.toBe('${{ secrets.PRODUCTION_SSH_KEY }}');
   });

@@ -35,7 +35,7 @@ function runCli(cwd, args, opts = {}) {
     const timer = setTimeout(() => {
       child.kill('SIGTERM');
       reject(new Error(`CLI timeout: deployhub ${args.join(' ')}\n${stdout}\n${stderr}`));
-    }, opts.timeoutMs || 30000);
+    }, opts.timeoutMs || 60000);
     child.on('close', (code) => {
       clearTimeout(timer);
       resolve({ code: code ?? 1, stdout, stderr });

@@ -12,7 +12,8 @@ export function createEc2Provider(config, envName, env = process.env) {
   const log = createLogger('ec2');
   const settings = getEnvSettings(config.environments[envName]);
   const instanceId = env.EC2_INSTANCE_ID || settings.ec2InstanceId;
-  const region = env.AWS_REGION || settings.awsRegion || 'us-east-1';
+  const region =
+    env.EC2_LOOKUP_AWS_REGION || settings.awsRegion || 'us-east-1';
 
   async function resolveHost() {
     if (settings.host || env.SSH_HOST) {
@@ -30,8 +31,12 @@ export function createEc2Provider(config, envName, env = process.env) {
 
     /** @type {Record<string, string>} */
     const awsEnv = { ...process.env };
-    if (env.AWS_ACCESS_KEY_ID) awsEnv.AWS_ACCESS_KEY_ID = env.AWS_ACCESS_KEY_ID;
-    if (env.AWS_SECRET_ACCESS_KEY) awsEnv.AWS_SECRET_ACCESS_KEY = env.AWS_SECRET_ACCESS_KEY;
+    if (env.EC2_LOOKUP_AWS_ACCESS_KEY_ID) {
+      awsEnv.AWS_ACCESS_KEY_ID = env.EC2_LOOKUP_AWS_ACCESS_KEY_ID;
+    }
+    if (env.EC2_LOOKUP_AWS_SECRET_ACCESS_KEY) {
+      awsEnv.AWS_SECRET_ACCESS_KEY = env.EC2_LOOKUP_AWS_SECRET_ACCESS_KEY;
+    }
     awsEnv.AWS_DEFAULT_REGION = region;
 
     try {

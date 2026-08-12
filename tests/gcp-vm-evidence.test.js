@@ -119,7 +119,7 @@ describe('EVIDENCE gcp-vm: independent host-resolution + PM2 scoping', () => {
     const provider = createGcpVmProvider(config, 'staging', {
       SSH_KEY: 'k',
       SSH_USER: 'ubuntu',
-      GCP_PROJECT_ID: 'my-gcp-proj',
+      GCP_VM_LOOKUP_PROJECT_ID: 'my-gcp-proj',
       GCP_ZONE: 'us-central1-a',
       GCP_INSTANCE_NAME: 'demoapp-staging',
     });
@@ -195,7 +195,7 @@ describe('EVIDENCE gcp-vm: independent host-resolution + PM2 scoping', () => {
     const provider = createGcpVmProvider(config, 'staging', {
       SSH_KEY: 'k',
       SSH_USER: 'ubuntu',
-      GCP_PROJECT_ID: 'proj',
+      GCP_VM_LOOKUP_PROJECT_ID: 'proj',
       GCP_ZONE: 'europe-west1-b',
       GCP_INSTANCE_NAME: 'staging-vm',
     });

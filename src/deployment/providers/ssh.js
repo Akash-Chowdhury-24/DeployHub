@@ -426,10 +426,10 @@ export function createSshProvider(config, envName, env = process.env) {
       return;
     }
 
-    if (framework === 'rails') {
+    if (framework === 'rails' || framework === 'ruby') {
       await exec(ssh, `cd ${dir} && bundle install --deployment`);
       await stopScopedBackendProcess(ssh, targetPath);
-      await startScopedNohup(ssh, targetPath, `bundle exec puma -p ${port}`);
+      await startScopedNohup(ssh, targetPath, `bundle exec puma -b tcp://0.0.0.0:${port}`);
       return;
     }
 

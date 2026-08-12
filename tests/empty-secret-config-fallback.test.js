@@ -102,16 +102,16 @@ describe('empty GitHub secret strings fall back to config (not treated as set)',
     expect(sshPort).toBe(2222);
   });
 
-  test('EC2: empty EC2_INSTANCE_ID / AWS_REGION fall through to config settings', () => {
+  test('EC2: empty EC2_INSTANCE_ID / EC2_LOOKUP_AWS_REGION fall through to config settings', () => {
     const settings = {
       ec2InstanceId: 'i-from-config',
       awsRegion: 'eu-west-1',
       host: '203.0.113.10',
     };
     // Same expressions as createEc2Provider (env first — empty must be falsy)
-    const env = { EC2_INSTANCE_ID: '', AWS_REGION: '', SSH_HOST: '' };
+    const env = { EC2_INSTANCE_ID: '', EC2_LOOKUP_AWS_REGION: '', SSH_HOST: '' };
     const instanceId = env.EC2_INSTANCE_ID || settings.ec2InstanceId;
-    const region = env.AWS_REGION || settings.awsRegion || 'us-east-1';
+    const region = env.EC2_LOOKUP_AWS_REGION || settings.awsRegion || 'us-east-1';
     const host = settings.host || env.SSH_HOST;
 
     expect(instanceId).toBe('i-from-config');
@@ -145,7 +145,7 @@ describe('empty GitHub secret strings fall back to config (not treated as set)',
       SSH_HOST: '',
       SSH_USER: '',
       EC2_INSTANCE_ID: '',
-      AWS_REGION: '',
+      EC2_LOOKUP_AWS_REGION: '',
     });
 
     await provider.deploy(path.join(tmp, 'artifact'));

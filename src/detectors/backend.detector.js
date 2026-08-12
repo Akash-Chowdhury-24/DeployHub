@@ -64,6 +64,20 @@ const FRAMEWORKS = {
       port: 3000,
     },
   },
+  node: {
+    // After named Node frameworks: package.json backend without Express/Nest/Fastify/Koa.
+    // Exclude obvious frontend-only trees so React/Vue apps are not labeled "node".
+    detect: (cwd) =>
+      fs.existsSync(path.join(cwd, 'package.json')) && !isLikelyFrontendPackage(cwd),
+    defaults: {
+      language: 'node',
+      buildCommand: null,
+      startCommand: 'npm start',
+      buildOutput: '.',
+      testCommand: 'npm test',
+      port: 3000,
+    },
+  },
   fastapi: {
     detect: (cwd) => fileContains(cwd, 'requirements.txt', 'fastapi'),
     defaults: {
@@ -99,6 +113,20 @@ const FRAMEWORKS = {
       port: 5000,
     },
   },
+  python: {
+    detect: (cwd) =>
+      fs.existsSync(path.join(cwd, 'requirements.txt')) ||
+      fs.existsSync(path.join(cwd, 'pyproject.toml')) ||
+      fs.existsSync(path.join(cwd, 'setup.py')),
+    defaults: {
+      language: 'python',
+      buildCommand: null,
+      startCommand: 'python -m http.server 8000 --bind 0.0.0.0',
+      buildOutput: '.',
+      testCommand: 'pytest',
+      port: 8000,
+    },
+  },
   laravel: {
     detect: (cwd) => hasComposerPackage(cwd, 'laravel/framework'),
     defaults: {
@@ -115,14 +143,41 @@ const FRAMEWORKS = {
     defaults: {
       language: 'php',
       buildCommand: null,
-      startCommand: 'php-fpm',
+      startCommand: 'php -S 0.0.0.0:80 -t public',
       buildOutput: '.',
       testCommand: 'php bin/phpunit',
       port: 80,
     },
   },
+  php: {
+    // After Laravel/Symfony: composer.json without those frameworks, or bare .php sources.
+    detect: (cwd) =>
+      fs.existsSync(path.join(cwd, 'composer.json')) || hasPhpSources(cwd),
+    defaults: {
+      language: 'php',
+      buildCommand: null,
+      startCommand: 'php -S 0.0.0.0:80 -t .',
+      buildOutput: '.',
+      testCommand: null,
+      port: 80,
+    },
+  },
   spring: {
     detect: (cwd) => fileContains(cwd, 'pom.xml', 'spring-boot'),
+    defaults: {
+      language: 'java',
+      buildCommand: 'mvn package',
+      startCommand: 'java -jar target/*.jar',
+      buildOutput: 'target',
+      testCommand: 'mvn test',
+      port: 8080,
+    },
+  },
+  java: {
+    detect: (cwd) =>
+      fs.existsSync(path.join(cwd, 'pom.xml')) ||
+      fs.existsSync(path.join(cwd, 'build.gradle')) ||
+      fs.existsSync(path.join(cwd, 'build.gradle.kts')),
     defaults: {
       language: 'java',
       buildCommand: 'mvn package',
@@ -165,10 +220,21 @@ const FRAMEWORKS = {
     defaults: {
       language: 'ruby',
       buildCommand: 'bundle exec rake assets:precompile',
-      startCommand: 'bundle exec puma',
+      startCommand: 'bundle exec puma -b tcp://0.0.0.0:3000',
       buildOutput: '.',
       testCommand: 'bundle exec rspec',
       port: 3000,
+    },
+  },
+  ruby: {
+    detect: (cwd) => fs.existsSync(path.join(cwd, 'Gemfile')),
+    defaults: {
+      language: 'ruby',
+      buildCommand: null,
+      startCommand: 'bundle exec puma -b tcp://0.0.0.0:9292',
+      buildOutput: '.',
+      testCommand: 'bundle exec rspec',
+      port: 9292,
     },
   },
 };
@@ -178,15 +244,20 @@ const DETECTION_ORDER = [
   'express',
   'fastify',
   'koa',
+  'node',
   'fastapi',
   'django',
   'flask',
+  'python',
   'laravel',
   'symfony',
+  'php',
   'spring',
+  'java',
   'go',
   'dotnet',
   'rails',
+  'ruby',
 ];
 
 /**
@@ -199,6 +270,22 @@ function hasPackageDep(cwd, dep) {
   const pkg = fs.readJsonSync(pkgPath);
   const deps = { ...pkg.dependencies, ...pkg.devDependencies };
   return !!deps[dep];
+}
+
+/**
+ * @param {string} cwd
+ * @returns {boolean}
+ */
+function isLikelyFrontendPackage(cwd) {
+  return [
+    'react',
+    'vue',
+    '@angular/core',
+    'svelte',
+    'astro',
+    'next',
+    'vite',
+  ].some((dep) => hasPackageDep(cwd, dep));
 }
 
 /**
@@ -223,6 +310,24 @@ function hasComposerPackage(cwd, packageName) {
   const composer = fs.readJsonSync(composerPath);
   const deps = { ...composer.require, ...composer['require-dev'] };
   return !!deps[packageName];
+}
+
+/**
+ * @param {string} cwd
+ * @returns {boolean}
+ */
+function hasPhpSources(cwd) {
+  try {
+    const root = fs.readdirSync(cwd);
+    if (root.some((f) => f.endsWith('.php'))) return true;
+    const publicDir = path.join(cwd, 'public');
+    if (fs.existsSync(publicDir) && fs.statSync(publicDir).isDirectory()) {
+      return fs.readdirSync(publicDir).some((f) => f.endsWith('.php'));
+    }
+  } catch {
+    return false;
+  }
+  return false;
 }
 
 /**

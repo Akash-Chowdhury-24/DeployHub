@@ -95,6 +95,7 @@ describe('docker image naming', () => {
   test('isInterpretedBackendFramework covers Python PHP and Ruby', () => {
     expect(isInterpretedBackendFramework('fastapi')).toBe(true);
     expect(isInterpretedBackendFramework('laravel')).toBe(true);
+    expect(isInterpretedBackendFramework('php')).toBe(true);
     expect(isInterpretedBackendFramework('rails')).toBe(true);
     expect(isInterpretedBackendFramework('spring')).toBe(false);
     expect(describeInterpretedBackendGap('fastapi').ecosystem).toBe('Python');

@@ -49,10 +49,11 @@ describe('docker secrets required vs CI wiring', () => {
 
     const ec2Items = getDeploymentSecretChecklistItems('ec2');
     const sshHost = ec2Items.find((i) => i.key === 'SSH_HOST');
-    const awsKey = ec2Items.find((i) => i.key === 'AWS_ACCESS_KEY_ID');
+    const awsKey = ec2Items.find((i) => i.key === 'EC2_LOOKUP_AWS_ACCESS_KEY_ID');
     expect(sshHost?.required).toBe(true);
     expect(awsKey?.required).toBe(false);
     expect(formatSecretChecklistLine(awsKey)).toMatch(/optional/);
+    expect(awsKey?.note).toMatch(/distinct from AWS S3/i);
   });
 
   test('getRequiredSecrets excludes optional docker registry vars', () => {

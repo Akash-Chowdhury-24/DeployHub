@@ -11,7 +11,7 @@ import { getEnvSettings } from '../../core/config.js';
 export function createGcpVmProvider(config, envName, env = process.env) {
   const log = createLogger('gcp-vm');
   const settings = getEnvSettings(config.environments[envName]);
-  const projectId = env.GCP_PROJECT_ID || settings.gcpProjectId;
+  const projectId = env.GCP_VM_LOOKUP_PROJECT_ID || settings.gcpProjectId;
   const zone = env.GCP_ZONE || settings.gcpZone;
   const instanceName = env.GCP_INSTANCE_NAME || settings.gcpInstanceName;
 
@@ -23,7 +23,7 @@ export function createGcpVmProvider(config, envName, env = process.env) {
     if (!projectId || !zone || !instanceName) {
       throw new Error(
         'Could not resolve host via GCP instance lookup, and no SSH_HOST was set — ' +
-          'provide SSH_HOST (instance external IP/DNS) or set GCP_PROJECT_ID, GCP_ZONE, and GCP_INSTANCE_NAME for auto lookup.'
+          'provide SSH_HOST (instance external IP/DNS) or set GCP_VM_LOOKUP_PROJECT_ID, GCP_ZONE, and GCP_INSTANCE_NAME for auto lookup.'
       );
     }
 
@@ -31,8 +31,8 @@ export function createGcpVmProvider(config, envName, env = process.env) {
 
     /** @type {Record<string, string>} */
     const gcpEnv = { ...process.env };
-    if (env.GCP_KEY_FILE) {
-      gcpEnv.GOOGLE_APPLICATION_CREDENTIALS = env.GCP_KEY_FILE;
+    if (env.GCP_VM_LOOKUP_KEY_FILE) {
+      gcpEnv.GOOGLE_APPLICATION_CREDENTIALS = env.GCP_VM_LOOKUP_KEY_FILE;
     }
 
     try {

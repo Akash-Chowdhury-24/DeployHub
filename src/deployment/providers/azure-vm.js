@@ -11,9 +11,11 @@ import { getEnvSettings } from '../../core/config.js';
 export function createAzureVmProvider(config, envName, env = process.env) {
   const log = createLogger('azure-vm');
   const settings = getEnvSettings(config.environments[envName]);
-  const subscriptionId = env.AZURE_SUBSCRIPTION_ID || settings.azureSubscriptionId;
-  const resourceGroup = env.AZURE_RESOURCE_GROUP || settings.azureResourceGroup;
-  const vmName = env.AZURE_VM_NAME || settings.azureVmName;
+  const subscriptionId =
+    env.AZURE_VM_LOOKUP_SUBSCRIPTION_ID || settings.azureSubscriptionId;
+  const resourceGroup =
+    env.AZURE_VM_LOOKUP_RESOURCE_GROUP || settings.azureResourceGroup;
+  const vmName = env.AZURE_VM_LOOKUP_VM_NAME || settings.azureVmName;
 
   async function resolveHost() {
     if (settings.host || env.SSH_HOST) {
@@ -23,7 +25,7 @@ export function createAzureVmProvider(config, envName, env = process.env) {
     if (!subscriptionId || !resourceGroup || !vmName) {
       throw new Error(
         'Could not resolve host via Azure VM lookup, and no SSH_HOST was set — ' +
-          'provide SSH_HOST (VM public IP/DNS) or set AZURE_SUBSCRIPTION_ID, AZURE_RESOURCE_GROUP, and AZURE_VM_NAME for auto lookup.'
+          'provide SSH_HOST (VM public IP/DNS) or set AZURE_VM_LOOKUP_SUBSCRIPTION_ID, AZURE_VM_LOOKUP_RESOURCE_GROUP, and AZURE_VM_LOOKUP_VM_NAME for auto lookup.'
       );
     }
 

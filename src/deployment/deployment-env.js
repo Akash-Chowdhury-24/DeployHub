@@ -169,27 +169,32 @@ export const DEPLOYMENT_ENV_DEFS = {
       when: 'optional',
     },
     {
-      key: 'AWS_ACCESS_KEY_ID',
+      key: 'EC2_LOOKUP_AWS_ACCESS_KEY_ID',
       optionalReason:
         'only required if using EC2_INSTANCE_ID for dynamic IP lookup; otherwise leave blank',
       comment: [
+        'EC2 instance-IP lookup credential (NOT the same as AWS S3 storage credentials).',
         'AWS access key with ec2:DescribeInstances permission.',
         'Create in AWS Console → IAM → Users → Security credentials.',
       ],
       when: 'optional',
     },
     {
-      key: 'AWS_SECRET_ACCESS_KEY',
+      key: 'EC2_LOOKUP_AWS_SECRET_ACCESS_KEY',
       optionalReason:
         'only required if using EC2_INSTANCE_ID for dynamic IP lookup; otherwise leave blank',
-      comment: ['Secret for the AWS access key above.'],
+      comment: [
+        'Secret for EC2_LOOKUP_AWS_ACCESS_KEY_ID (distinct from AWS_SECRET_ACCESS_KEY used by S3).',
+      ],
       when: 'optional',
     },
     {
-      key: 'AWS_REGION',
+      key: 'EC2_LOOKUP_AWS_REGION',
       optionalReason:
         'only required if using EC2_INSTANCE_ID for dynamic IP lookup; otherwise leave blank',
-      comment: ['AWS region where your EC2 instance runs.'],
+      comment: [
+        'AWS region for EC2 DescribeInstances lookup (distinct from AWS_REGION used by S3).',
+      ],
       example: 'us-east-1',
       when: 'optional',
     },
@@ -199,52 +204,60 @@ export const DEPLOYMENT_ENV_DEFS = {
     ...SSH_BACKEND_ENV_VARS,
     ...SSH_CI_ENV_VARS,
     {
-      key: 'AZURE_SUBSCRIPTION_ID',
+      key: 'AZURE_VM_LOOKUP_SUBSCRIPTION_ID',
       optionalReason:
         'only required for dynamic VM IP lookup via Azure API; otherwise set SSH_HOST directly',
       comment: [
-        'Azure subscription ID. Used to look up VM public IP via Azure API.',
+        'Azure VM IP-lookup subscription ID (deployment-side; not Azure Blob storage).',
         'Find in Azure Portal → Subscriptions, or run: az account show --query id -o tsv',
       ],
       when: 'optional',
     },
     {
-      key: 'AZURE_RESOURCE_GROUP',
+      key: 'AZURE_VM_LOOKUP_RESOURCE_GROUP',
       optionalReason:
         'only required for dynamic VM IP lookup via Azure API; otherwise leave blank',
-      comment: ['Resource group containing your VM.'],
+      comment: [
+        'Resource group containing your VM (deployment lookup; not Azure Blob storage).',
+      ],
       example: 'my-app-rg',
       when: 'optional',
     },
     {
-      key: 'AZURE_VM_NAME',
+      key: 'AZURE_VM_LOOKUP_VM_NAME',
       optionalReason:
         'only required for dynamic VM IP lookup via Azure API; otherwise set SSH_HOST directly',
       comment: [
-        'Name of the Azure virtual machine.',
+        'Name of the Azure virtual machine for IP lookup.',
         'If unset, SSH_HOST must be set to the VM public IP or DNS.',
       ],
       when: 'optional',
     },
     {
-      key: 'AZURE_TENANT_ID',
+      key: 'AZURE_VM_LOOKUP_TENANT_ID',
       optionalReason:
         'only required for non-interactive CI deploys (GitHub Actions) using a service principal',
-      comment: ['Azure AD tenant ID for service principal auth in CI.'],
+      comment: [
+        'Azure AD tenant ID for service principal auth in CI (VM deploy lookup).',
+      ],
       when: 'optional',
     },
     {
-      key: 'AZURE_CLIENT_ID',
+      key: 'AZURE_VM_LOOKUP_CLIENT_ID',
       optionalReason:
         'only required for non-interactive CI deploys (GitHub Actions) using a service principal',
-      comment: ['Service principal application (client) ID for CI auth.'],
+      comment: [
+        'Service principal application (client) ID for CI auth (VM deploy lookup).',
+      ],
       when: 'optional',
     },
     {
-      key: 'AZURE_CLIENT_SECRET',
+      key: 'AZURE_VM_LOOKUP_CLIENT_SECRET',
       optionalReason:
         'only required for non-interactive CI deploys (GitHub Actions) using a service principal',
-      comment: ['Service principal client secret for CI auth.'],
+      comment: [
+        'Service principal client secret for CI auth (VM deploy lookup).',
+      ],
       when: 'optional',
     },
   ],
@@ -253,11 +266,11 @@ export const DEPLOYMENT_ENV_DEFS = {
     ...SSH_BACKEND_ENV_VARS,
     ...SSH_CI_ENV_VARS,
     {
-      key: 'GCP_PROJECT_ID',
+      key: 'GCP_VM_LOOKUP_PROJECT_ID',
       optionalReason:
         'only required for dynamic VM IP lookup via GCP API; otherwise set SSH_HOST directly',
       comment: [
-        'GCP project ID. Used to look up VM IP via Compute API.',
+        'GCP project ID for Compute Engine IP lookup (NOT the same as GCP Storage GCP_PROJECT_ID).',
         'Find in GCP Console → Dashboard, or run: gcloud config get-value project',
       ],
       when: 'optional',
@@ -282,11 +295,11 @@ export const DEPLOYMENT_ENV_DEFS = {
       when: 'optional',
     },
     {
-      key: 'GCP_KEY_FILE',
+      key: 'GCP_VM_LOOKUP_KEY_FILE',
       optionalReason:
         'only required for dynamic VM IP lookup via GCP API or non-interactive CI auth; otherwise leave blank',
       comment: [
-        'Path to a GCP service account JSON key file.',
+        'Path to a GCP service account JSON key for VM IP lookup (distinct from GCP Storage GCP_KEY_FILE).',
         'Create in GCP Console → IAM → Service Accounts → Keys.',
       ],
       when: 'optional',
@@ -380,6 +393,27 @@ export const DEPLOYMENT_ENV_KEYS = Object.fromEntries(
     defs.map((d) => d.key),
   ])
 );
+
+/**
+ * Deployment-side cloud-API lookup credentials — distinct from storage-provider
+ * env vars (storage stays project-wide / unprefixed).
+ *
+ * Convention: `{METHOD}_LOOKUP_…` — method-scoped, purpose-clear, layers under
+ * the existing multi-env prefixing system (e.g. PRODUCTION_EC2_LOOKUP_AWS_ACCESS_KEY_ID).
+ */
+export const DEPLOYMENT_LOOKUP_ENV_KEYS = new Set([
+  'EC2_LOOKUP_AWS_ACCESS_KEY_ID',
+  'EC2_LOOKUP_AWS_SECRET_ACCESS_KEY',
+  'EC2_LOOKUP_AWS_REGION',
+  'AZURE_VM_LOOKUP_SUBSCRIPTION_ID',
+  'AZURE_VM_LOOKUP_RESOURCE_GROUP',
+  'AZURE_VM_LOOKUP_VM_NAME',
+  'AZURE_VM_LOOKUP_TENANT_ID',
+  'AZURE_VM_LOOKUP_CLIENT_ID',
+  'AZURE_VM_LOOKUP_CLIENT_SECRET',
+  'GCP_VM_LOOKUP_PROJECT_ID',
+  'GCP_VM_LOOKUP_KEY_FILE',
+]);
 
 /**
  * Locally required env keys for doctor method-specific checks.
@@ -482,12 +516,24 @@ export function getDeploymentSecretChecklistItems(deployType, config = null) {
 
     const key = toGithubSecretKey(d.key);
     const required = d.when !== 'optional';
-    const note =
+    let note =
       d.when === 'optional'
         ? d.optionalReason
         : d.when === 'ci'
           ? d.optionalReason || 'required for GitHub Actions CI (paste private key contents)'
           : undefined;
+
+    if (DEPLOYMENT_LOOKUP_ENV_KEYS.has(d.key)) {
+      const purpose =
+        deployType === 'ec2'
+          ? 'EC2 instance-IP lookup credential (distinct from AWS S3 storage)'
+          : deployType === 'gcp-vm'
+            ? 'GCP VM instance-IP lookup credential (distinct from GCP Storage)'
+            : deployType === 'azure-vm'
+              ? 'Azure VM IP-lookup credential (distinct from Azure Blob storage)'
+              : 'deployment cloud-API lookup credential';
+      note = note ? `${purpose}; ${note}` : purpose;
+    }
 
     const existing = byKey.get(key);
     if (existing) {
@@ -731,20 +777,47 @@ export function formatSecretChecklistLine(item) {
  * @param {string} deployType
  * @param {import('../core/config.js').DeployHubConfig} [config]
  * @param {Record<string, Record<string, unknown>>} [environments]
+ * @param {{ envName?: string }} [options]
  * @returns {string}
  */
 export function generateDeploymentEnvSection(
   deployType,
   config = null,
-  environments = {}
+  environments = {},
+  options = {}
 ) {
   const defs = DEPLOYMENT_ENV_DEFS[deployType] || [];
   const projectType = config?.projectType || 'frontend';
   const isBackend = projectType === 'backend' || projectType === 'both';
+  const envName = options.envName;
+  const cfg = {
+    ...(config || {}),
+    environments: environments || config?.environments || {},
+  };
+  const shouldPrefix =
+    !!envName && envUsesPrefixedSecrets(envName, /** @type {any} */ (cfg));
 
-  const title = DEPLOYMENT_SECTION_TITLES[deployType] || deployType;
+  const baseTitle = DEPLOYMENT_SECTION_TITLES[deployType] || deployType;
+  const title =
+    envName && Object.keys(environments || {}).length > 1
+      ? `${baseTitle} (${envName})`
+      : baseTitle;
   /** @type {string[]} */
   const lines = [`# ${title}`];
+
+  // Prefer defaults from this environment's config when generating per-env sections.
+  const envEntry = envName
+    ? /** @type {Record<string, unknown>} */ (
+        (environments || {})[envName] || {}
+      )
+    : /** @type {Record<string, unknown>} */ (
+        Object.values(environments || {})[0] || {}
+      );
+  // Support both new { config: {...} } shape and flat legacy env entries.
+  const settings =
+    envEntry && typeof envEntry.config === 'object' && envEntry.config
+      ? /** @type {Record<string, unknown>} */ (envEntry.config)
+      : envEntry;
 
   for (const d of defs) {
     if (d.when === 'backend' && !isBackend) continue;
@@ -762,8 +835,10 @@ export function generateDeploymentEnvSection(
       lines.push(`# Example: ${d.example}`);
     }
 
-    const defaultVal = d.default || getDefaultFromConfig(d.key, config, environments);
-    lines.push(defaultVal ? `${d.key}=${defaultVal}` : `${d.key}=`);
+    const key = shouldPrefix ? prefixSecretKey(envName, d.key) : d.key;
+    const defaultVal =
+      d.default || getDefaultFromConfig(d.key, config, settings);
+    lines.push(defaultVal ? `${key}=${defaultVal}` : `${key}=`);
     lines.push('');
   }
 
@@ -774,23 +849,21 @@ export function generateDeploymentEnvSection(
 /**
  * @param {string} key
  * @param {import('../core/config.js').DeployHubConfig} [config]
- * @param {Record<string, Record<string, unknown>>} [environments]
+ * @param {Record<string, unknown>} [settings]
  */
-function getDefaultFromConfig(key, config, environments) {
-  const envEntry = Object.values(environments || {})[0] || {};
-
+function getDefaultFromConfig(key, config, settings = {}) {
   const map = {
-    SSH_HOST: envEntry.host,
-    SSH_USER: envEntry.user,
-    SSH_DEPLOY_PATH: envEntry.deployPath || envEntry.path,
-    SSH_APP_NAME: envEntry.appName,
+    SSH_HOST: settings.host,
+    SSH_USER: settings.user,
+    SSH_DEPLOY_PATH: settings.deployPath || settings.path,
+    SSH_APP_NAME: settings.appName,
     SSH_PORT: config?.port || config?.backend?.port,
     SSH_SSH_PORT: '22',
-    KUBE_NAMESPACE: config?.project || 'default',
-    DOCKER_IMAGE_NAME: config?.project,
+    KUBE_NAMESPACE: settings.kubeNamespace || config?.project || 'default',
+    DOCKER_IMAGE_NAME: settings.dockerImageName || config?.project,
     DOCKER_IMAGE_TAG: '',
-    DOCKER_REGISTRY_URL: envEntry.dockerRegistryUrl,
-    AWS_REGION: 'us-east-1',
+    DOCKER_REGISTRY_URL: settings.dockerRegistryUrl,
+    EC2_LOOKUP_AWS_REGION: settings.awsRegion || 'us-east-1',
   };
 
   const val = map[key];
@@ -871,8 +944,8 @@ export const DEPLOYMENT_GUIDE = {
     after: [
       'AWS Console → EC2 → Security Groups → your instance group → Inbound rules →',
       '  Add rule: SSH, port 22, source: My IP',
-      'Copy .env.example to .env — set SSH_KEY_PATH, SSH_HOST (or EC2_INSTANCE_ID + AWS creds).',
-      'Add GitHub Secrets: SSH_HOST, SSH_USER, SSH_KEY, plus AWS_* if using instance ID lookup.',
+      'Copy .env.example to .env — set SSH_KEY_PATH, SSH_HOST (or EC2_INSTANCE_ID + EC2_LOOKUP_AWS_*).',
+      'Add GitHub Secrets: SSH_HOST, SSH_USER, SSH_KEY, plus EC2_LOOKUP_AWS_* if using instance ID lookup (distinct from S3 AWS_*).',
       'Run deployhub doctor to verify SSH and optional AWS API access.',
       'git push origin main to trigger your first deployment.',
     ],
@@ -893,7 +966,7 @@ export const DEPLOYMENT_GUIDE = {
       'Azure Portal → VM → Networking → Inbound port rules → allow SSH (22) from your IP.',
       'Or: az network nsg rule create --name AllowSSH --priority 1000 --source-address-prefix YOUR_IP ...',
       'Copy .env.example to .env and fill in SSH_HOST, SSH_USER, SSH_KEY_PATH.',
-      'For CI: add AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET as GitHub Secrets.',
+      'For CI: add AZURE_VM_LOOKUP_TENANT_ID, AZURE_VM_LOOKUP_CLIENT_ID, AZURE_VM_LOOKUP_CLIENT_SECRET as GitHub Secrets.',
       'Run deployhub doctor, then git push origin main.',
     ],
   },
@@ -940,6 +1013,7 @@ export const DEPLOYMENT_GUIDE = {
       'Copy .env.example to .env and set DOCKER_IMAGE_NAME, DOCKER_REGISTRY_USERNAME, and DOCKER_REGISTRY_TOKEN.',
       'Skipping registry credentials will very likely cause ImagePullBackOff — the cluster cannot see local Docker images.',
       'For private registries: also create kubectl create secret docker-registry ... and set KUBE_IMAGE_PULL_SECRET.',
+      'Interpreted backends (Node/Python/PHP/Rails): rollback refuses to rebuild from the artifact when the buildId image is not local — keep pipeline.docker builds so the restored tag exists.',
       'Add the GitHub Secrets listed below (Settings → Secrets and variables → Actions).',
       'Run deployhub doctor to verify cluster access and that your image is pullable.',
       'git push origin main to trigger your first deployment.',

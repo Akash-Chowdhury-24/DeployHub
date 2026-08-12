@@ -32,6 +32,7 @@ const ADAPTERS = {
   go: goAdapter,
   dotnet: dotnetAdapter,
   rails: railsAdapter,
+  ruby: railsAdapter,
 };
 
 /**

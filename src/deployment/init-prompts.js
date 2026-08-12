@@ -81,7 +81,12 @@ export async function promptServerDeployment(
         'Non-interactive env add requires --method <ssh|docker|ec2|azure-vm|gcp-vm|kubernetes>.'
       );
     }
-    return buildNonInteractiveDeployAnswers(options.deployType, projectName, options.envName);
+    return buildNonInteractiveDeployAnswers(
+      options.deployType,
+      projectName,
+      options.envName,
+      existingEnvNames
+    );
   }
 
   /** @type {import('inquirer').QuestionCollection} */
@@ -122,7 +127,9 @@ export async function promptServerDeployment(
   const deployType = base.deployType;
 
   if (deployType === 'kubernetes') {
-    return promptKubernetesDeployment(base, projectName, projectType);
+    return promptKubernetesDeployment(base, projectName, projectType, {
+      existingEnvNames,
+    });
   }
 
   if (deployType === 'docker') {
@@ -137,8 +144,14 @@ export async function promptServerDeployment(
  * @param {string} deployType
  * @param {string} projectName
  * @param {string} [envName]
+ * @param {string[]} [existingEnvNames]
  */
-function buildNonInteractiveDeployAnswers(deployType, projectName, envName) {
+function buildNonInteractiveDeployAnswers(
+  deployType,
+  projectName,
+  envName,
+  existingEnvNames = []
+) {
   const base = { deployType, envName: envName || 'default' };
   if (deployType === 'docker') {
     return {
@@ -156,7 +169,11 @@ function buildNonInteractiveDeployAnswers(deployType, projectName, envName) {
       ...base,
       kubeconfig: '~/.kube/config',
       kubeContext: '',
-      kubeNamespace: projectName,
+      kubeNamespace: suggestKubeNamespaceDefault(
+        projectName,
+        base.envName,
+        existingEnvNames
+      ),
       dockerImageName: projectName,
       dockerRegistryUrl: '',
       dockerRegistryUsername: '',
@@ -177,13 +194,38 @@ function buildNonInteractiveDeployAnswers(deployType, projectName, envName) {
 }
 
 /**
+ * Suggested Kubernetes namespace for prompts / --yes defaults.
+ * First environment → bare project name; additional envs → `{project}-{envName}`
+ * so the suggested default matches resolveKubeNamespace auto-scoping behavior.
+ *
+ * @param {string} projectName
+ * @param {string} envName
+ * @param {string[]} existingEnvNames
+ * @returns {string}
+ */
+export function suggestKubeNamespaceDefault(projectName, envName, existingEnvNames = []) {
+  if ((existingEnvNames || []).length > 0) {
+    return `${projectName}-${envName}`;
+  }
+  return projectName;
+}
+
+/**
  * @param {Record<string, string>} base
  * @param {string} projectName
  * @param {'frontend'|'backend'|'both'} projectType
+ * @param {{ existingEnvNames?: string[] }} [options]
  */
-async function promptKubernetesDeployment(base, projectName, projectType) {
+async function promptKubernetesDeployment(base, projectName, projectType, options = {}) {
   const defaultKubeconfig = await detectKubeconfigPath();
   const contexts = await listKubeContexts();
+  const envName = base.envName || 'production';
+  const existingEnvNames = options.existingEnvNames || [];
+  const namespaceDefault = suggestKubeNamespaceDefault(
+    projectName,
+    envName,
+    existingEnvNames
+  );
 
   const kubeAnswers = await inquirer.prompt([
     {
@@ -202,8 +244,11 @@ async function promptKubernetesDeployment(base, projectName, projectType) {
     {
       type: 'input',
       name: 'kubeNamespace',
-      message: 'Kubernetes namespace (e.g. my-app or default):',
-      default: projectName,
+      message:
+        existingEnvNames.length > 0
+          ? `Kubernetes namespace (suggested ${namespaceDefault} so it does not collide with existing envs):`
+          : 'Kubernetes namespace (e.g. my-app or default):',
+      default: namespaceDefault,
     },
     {
       type: 'input',

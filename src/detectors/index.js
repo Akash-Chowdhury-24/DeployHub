@@ -43,13 +43,14 @@ export async function detectFramework(cwd = process.cwd()) {
   for (const detector of legacyDetectors) {
     if (detector.detect(cwd)) {
       const info = detector.getInfo(cwd);
+      const backendLegacy = new Set(['node', 'php', 'python', 'java', 'go', 'dotnet', 'ruby']);
       return {
         ...info,
-        projectType: info.framework === 'node' ? 'backend' : 'frontend',
+        projectType: backendLegacy.has(info.framework) ? 'backend' : 'frontend',
         language: info.framework,
         startCommand: null,
         testCommand: 'npm test',
-        port: 3000,
+        port: info.framework === 'php' ? 80 : info.framework === 'ruby' ? 9292 : 3000,
       };
     }
   }

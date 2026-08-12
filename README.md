@@ -883,13 +883,13 @@ DeployHub detects whether the server uses Debian-style `sites-available` or RHEL
 - Nginx layout detection and config test before reload (frontend)
 - Passwordless sudo and Nginx checks during `deployhub doctor` (frontend)
 - OS user suggestion from AMI hint (ubuntu, ec2-user)
-- Optional public IP lookup via `EC2_INSTANCE_ID` + AWS CLI
+- Optional public IP lookup via `EC2_INSTANCE_ID` + `EC2_LOOKUP_AWS_*` (AWS CLI)
 
 **After `init`:**
 1. AWS Console → EC2 → Security Groups → Inbound rules → SSH port 22 from My IP
 2. Ensure your deploy directory exists and is owned by your SSH user (see prerequisite above if `deployhub doctor` reports permission denied)
-3. Copy `.env.example` → `.env`; set `SSH_KEY_PATH`, `SSH_HOST` (or `EC2_INSTANCE_ID` + AWS creds)
-4. GitHub Secrets: `SSH_HOST`, `SSH_USER`, `SSH_KEY`, plus `AWS_*` if using instance ID lookup
+3. Copy `.env.example` → `.env`; set `SSH_KEY_PATH`, `SSH_HOST` (or `EC2_INSTANCE_ID` + `EC2_LOOKUP_AWS_*`)
+4. GitHub Secrets: `SSH_HOST`, `SSH_USER`, `SSH_KEY`, plus `EC2_LOOKUP_AWS_*` if using instance ID lookup (these are **not** the same secrets as AWS S3 storage)
 5. Run `deployhub doctor`, then `git push origin main`
 
 | Variable | Description | Example | Where to get it |
@@ -898,9 +898,9 @@ DeployHub detects whether the server uses Debian-style `sites-available` or RHEL
 | `SSH_USER` | SSH user for AMI | `ec2-user` | AMI documentation |
 | `SSH_KEY_PATH` | Path to .pem key | `~/.ssh/ec2-key.pem` | Downloaded at instance launch |
 | `EC2_INSTANCE_ID` | Instance ID (optional) | `i-0abc123...` | EC2 Console |
-| `AWS_ACCESS_KEY_ID` | AWS key for API lookup | `AKIA...` | IAM → Users → Security credentials |
-| `AWS_SECRET_ACCESS_KEY` | AWS secret | *(secret)* | Same as above |
-| `AWS_REGION` | Instance region | `us-east-1` | EC2 Console top bar |
+| `EC2_LOOKUP_AWS_ACCESS_KEY_ID` | AWS key for EC2 IP lookup (distinct from S3) | `AKIA...` | IAM → Users → Security credentials |
+| `EC2_LOOKUP_AWS_SECRET_ACCESS_KEY` | AWS secret for EC2 IP lookup | *(secret)* | Same as above |
+| `EC2_LOOKUP_AWS_REGION` | Instance region for DescribeInstances | `us-east-1` | EC2 Console top bar |
 
 ### Azure VM
 
@@ -926,7 +926,7 @@ DeployHub detects whether the server uses Debian-style `sites-available` or RHEL
 1. Azure Portal → VM → Networking → allow SSH (22) from your IP
 2. Ensure your deploy directory exists and is owned by your SSH user (see prerequisite above if `deployhub doctor` reports permission denied)
 3. Copy `.env.example` → `.env`; set `SSH_HOST`, `SSH_USER`, `SSH_KEY_PATH`
-4. For CI: add `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET` as GitHub Secrets
+4. For CI: add `AZURE_VM_LOOKUP_TENANT_ID`, `AZURE_VM_LOOKUP_CLIENT_ID`, `AZURE_VM_LOOKUP_CLIENT_SECRET` as GitHub Secrets
 5. Run `deployhub doctor`, then `git push origin main`
 
 | Variable | Description | Example | Where to get it |
@@ -934,9 +934,9 @@ DeployHub detects whether the server uses Debian-style `sites-available` or RHEL
 | `SSH_HOST` | VM public IP | `20.1.2.3` | Azure Portal → VM overview |
 | `SSH_USER` | SSH username | `azureuser` | Chosen at VM creation |
 | `SSH_KEY_PATH` | Private key path | `~/.ssh/azure.pem` | Your key file |
-| `AZURE_SUBSCRIPTION_ID` | Subscription (optional) | `uuid` | `az account show` |
-| `AZURE_RESOURCE_GROUP` | Resource group | `my-app-rg` | Portal → Resource groups |
-| `AZURE_VM_NAME` | VM name | `my-vm` | Portal → Virtual machines |
+| `AZURE_VM_LOOKUP_SUBSCRIPTION_ID` | Subscription (optional IP lookup) | `uuid` | `az account show` |
+| `AZURE_VM_LOOKUP_RESOURCE_GROUP` | Resource group | `my-app-rg` | Portal → Resource groups |
+| `AZURE_VM_LOOKUP_VM_NAME` | VM name | `my-vm` | Portal → Virtual machines |
 
 ### GCP VM
 
@@ -975,10 +975,10 @@ DeployHub detects whether the server uses Debian-style `sites-available` or RHEL
 | `SSH_APP_NAME` | PM2 process name (backend) | `my-api` | Your choice |
 | `SSH_PORT` | App listen port (backend) | `3000` | Your app config |
 | `SSH_KEY` | Private key contents (CI only) | `-----BEGIN...` | Same key as `SSH_KEY_PATH` |
-| `GCP_PROJECT_ID` | Project ID (optional) | `my-project-123` | `gcloud config get-value project` |
+| `GCP_VM_LOOKUP_PROJECT_ID` | Project ID for VM IP lookup (distinct from GCP Storage) | `my-project-123` | `gcloud config get-value project` |
 | `GCP_ZONE` | VM zone (optional) | `us-central1-a` | VM instance details |
 | `GCP_INSTANCE_NAME` | Instance name (optional) | `my-vm` | Compute Engine list |
-| `GCP_KEY_FILE` | Service account JSON (optional, CI) | `/path/to/key.json` | IAM → Service Accounts → Keys |
+| `GCP_VM_LOOKUP_KEY_FILE` | Service account JSON for VM lookup (distinct from GCP Storage) | `/path/to/key.json` | IAM → Service Accounts → Keys |
 
 ### Kubernetes
 
@@ -993,7 +993,7 @@ DeployHub detects whether the server uses Debian-style `sites-available` or RHEL
 **Init prompts (what `deployhub init` asks for Kubernetes):**
 1. Path to kubeconfig file (e.g. `~/.kube/config`)
 2. Kubernetes context
-3. Namespace (defaults to project name)
+3. Namespace (defaults to project name for the first env; additional envs suggest `{project}-{envName}` to avoid collisions)
 4. Container image name
 5. Registry URL (leave empty for Docker Hub)
 6. Registry username (required to push)
@@ -1008,6 +1008,8 @@ DeployHub detects whether the server uses Debian-style `sites-available` or RHEL
 - Complete `.env.example` for kubeconfig, context, namespace, and registry settings
 - Cluster connectivity test during `init`
 - On deploy: registry login → reuse or build image → push (unique tag unless `DOCKER_IMAGE_TAG` is set) → ensure namespace exists (prompt locally / auto-create in CI) → `kubectl apply` → `kubectl set image` with the full resolved image ref → `kubectl rollout restart` when that ref is unchanged so pods pick up a new digest
+
+> **Limitation — interpreted backends (Node / Python / PHP / Rails) + rollback:** Kubernetes rollback forces a rebuild from the restored artifact when the exact `buildId` image is not already local. Those artifacts ship source/`composer.json` (etc.) but **not** installed deps (`vendor/`, `node_modules`, …), so DeployHub **refuses** with a clear error instead of a confusing Docker build failure. Successful rollback needs the restored image tag already present locally (or a prior `pipeline.docker` build that produced it). Same rule as standalone Docker deploy fallback.
 
 > **Limitation — multiple Kubernetes clusters:** A generated workflow writes **one** kubeconfig file per job. Multiple Kubernetes environments that target **different clusters** in the same workflow run are not yet fully supported (follow-up). Same-cluster multi-namespace / multi-env is fine.
 
@@ -1140,7 +1142,20 @@ Run `deployhub doctor` after any config change.
 | `deployhub clean` | Remove old local artifacts |
 | `deployhub update` | Check for CLI updates |
 
-**Tests:** `npm test` — currently **320 passing** across the Jest suites.
+**Tests:** `npm test` — currently **442 passing** across the Jest suites (1 skipped).
+
+## Storage vs deployment lookup credentials
+
+Storage credentials (`AWS_*` for S3, `GCP_*` for GCP Storage, …) are **project-wide and unprefixed**. Optional cloud-API credentials used only for **dynamic VM IP lookup** on EC2 / Azure VM / GCP VM use a distinct `{METHOD}_LOOKUP_…` namespace so they never collide with storage — even on a single-environment project.
+
+| Concern | Examples |
+|---------|----------|
+| Storage | `AWS_ACCESS_KEY_ID`, `GCP_PROJECT_ID`, `GCP_KEY_FILE` |
+| EC2 instance-IP lookup | `EC2_LOOKUP_AWS_ACCESS_KEY_ID`, `EC2_LOOKUP_AWS_SECRET_ACCESS_KEY`, `EC2_LOOKUP_AWS_REGION` |
+| GCP VM IP lookup | `GCP_VM_LOOKUP_PROJECT_ID`, `GCP_VM_LOOKUP_KEY_FILE` |
+| Azure VM IP lookup | `AZURE_VM_LOOKUP_SUBSCRIPTION_ID`, `AZURE_VM_LOOKUP_RESOURCE_GROUP`, `AZURE_VM_LOOKUP_VM_NAME`, … |
+
+Multi-env secret prefixing still applies on top (e.g. `PRODUCTION_EC2_LOOKUP_AWS_ACCESS_KEY_ID`).
 
 ## GitHub Secrets
 
@@ -1164,7 +1179,7 @@ Add these secrets in your repository (Settings → Secrets and variables → Act
 | `GCP_KEY_FILE` | GCP Storage |
 | `GCP_BUCKET` | GCP Storage |
 | `DROPBOX_ACCESS_TOKEN` | Dropbox |
-| `FTP_HOST`, `FTP_USER`, `FTP_PASSWORD` | FTP storage |
+| `FTP_HOST`, `FTP_USER`, `FTP_PASSWORD`, `FTP_PORT`, `FTP_PATH` | FTP storage (`FTP_PORT` default 21, `FTP_PATH` default `/uploads` — connection tuning, not secrets) |
 
 ### Server deployment (SSH, EC2, VMs, Docker, Kubernetes)
 
@@ -1178,9 +1193,9 @@ Add these secrets in your repository (Settings → Secrets and variables → Act
 | `SSH_DEPLOY_PATH` | Remote directory (optional if set in config) |
 | `SSH_APP_NAME` | PM2 process name for backends |
 | `SSH_PORT` | App port on server (backend) |
-| `EC2_INSTANCE_ID`, `AWS_*` | Optional EC2 dynamic IP lookup |
-| `AZURE_SUBSCRIPTION_ID`, `AZURE_RESOURCE_GROUP`, `AZURE_VM_NAME` | Optional Azure VM IP lookup |
-| `GCP_PROJECT_ID`, `GCP_ZONE`, `GCP_INSTANCE_NAME`, `GCP_KEY_FILE` | Optional GCP VM IP lookup |
+| `EC2_INSTANCE_ID`, `EC2_LOOKUP_AWS_*` | Optional EC2 dynamic IP lookup (distinct from S3 `AWS_*`) |
+| `AZURE_VM_LOOKUP_SUBSCRIPTION_ID`, `AZURE_VM_LOOKUP_RESOURCE_GROUP`, `AZURE_VM_LOOKUP_VM_NAME` | Optional Azure VM IP lookup |
+| `GCP_VM_LOOKUP_PROJECT_ID`, `GCP_ZONE`, `GCP_INSTANCE_NAME`, `GCP_VM_LOOKUP_KEY_FILE` | Optional GCP VM IP lookup (project/key distinct from GCP Storage) |
 | `DOCKER_IMAGE_NAME`, `DOCKER_REGISTRY_USERNAME`, `DOCKER_REGISTRY_TOKEN`, `DOCKER_REGISTRY_URL`, `DOCKER_HOST` | Docker deployment (`DOCKER_IMAGE_TAG` optional) |
 | `KUBECONFIG`, `KUBE_CONTEXT`, `KUBE_NAMESPACE`, `DOCKER_IMAGE_NAME`, `DOCKER_REGISTRY_USERNAME`, `DOCKER_REGISTRY_TOKEN`, `DOCKER_REGISTRY_URL`, `DOCKER_IMAGE_TAG`, `KUBE_IMAGE_PULL_SECRET` | Kubernetes — **`KUBECONFIG` in GitHub Secrets must be the kubeconfig file contents (or base64), not a filesystem path**. `DOCKER_IMAGE_TAG`, `KUBE_NAMESPACE`, `DOCKER_REGISTRY_URL`, and `KUBE_IMAGE_PULL_SECRET` are optional |
 

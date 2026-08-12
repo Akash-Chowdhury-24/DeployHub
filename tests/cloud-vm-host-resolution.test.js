@@ -47,7 +47,7 @@ describe('cloud VM host resolution on deploy/rollback', () => {
       };
       const provider = createEc2Provider(config, 'production', {
         EC2_INSTANCE_ID: 'i-abc123',
-        AWS_REGION: 'us-east-1',
+        EC2_LOOKUP_AWS_REGION: 'us-east-1',
         SSH_USER: 'ec2-user',
         SSH_KEY_PATH: '/tmp/key',
       });
@@ -144,9 +144,9 @@ describe('cloud VM host resolution on deploy/rollback', () => {
         environments: { production: { type: 'azure-vm' } },
       };
       const provider = createAzureVmProvider(config, 'production', {
-        AZURE_SUBSCRIPTION_ID: 'sub',
-        AZURE_RESOURCE_GROUP: 'rg',
-        AZURE_VM_NAME: 'my-vm',
+        AZURE_VM_LOOKUP_SUBSCRIPTION_ID: 'sub',
+        AZURE_VM_LOOKUP_RESOURCE_GROUP: 'rg',
+        AZURE_VM_LOOKUP_VM_NAME: 'my-vm',
         SSH_USER: 'azureuser',
         SSH_KEY_PATH: '/tmp/key',
       });
@@ -172,7 +172,7 @@ describe('cloud VM host resolution on deploy/rollback', () => {
         'production',
         {
           SSH_HOST: '10.0.0.9',
-          AZURE_VM_NAME: 'should-not-lookup',
+          AZURE_VM_LOOKUP_VM_NAME: 'should-not-lookup',
           SSH_USER: 'azureuser',
           SSH_KEY_PATH: '/tmp/key',
         }
@@ -199,7 +199,7 @@ describe('cloud VM host resolution on deploy/rollback', () => {
         environments: { production: { type: 'gcp-vm' } },
       };
       const provider = createGcpVmProvider(config, 'production', {
-        GCP_PROJECT_ID: 'proj',
+        GCP_VM_LOOKUP_PROJECT_ID: 'proj',
         GCP_ZONE: 'us-central1-a',
         GCP_INSTANCE_NAME: 'gce-1',
         SSH_USER: 'ubuntu',

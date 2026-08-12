@@ -24,24 +24,67 @@ export function resolveDockerSettings(config) {
   const projectType = config.projectType || 'frontend';
 
   if (projectType === 'both' && config.backend) {
+    const framework = config.backend.framework || 'express';
     return {
-      framework: config.backend.framework || 'express',
+      framework,
       buildCommand: config.backend.buildCommand ?? null,
-      buildOutput: config.backend.buildOutput || '.',
-      startCommand: config.backend.startCommand || 'npm start',
-      port: config.backend.port || 3000,
+      buildOutput: config.backend.buildOutput || defaultBuildOutput(framework, projectType),
+      // null lets each generator supply a language-correct CMD (do not force npm start).
+      startCommand: config.backend.startCommand ?? null,
+      port: config.backend.port || defaultPort(framework, projectType),
       projectType,
     };
   }
 
+  const framework =
+    config.framework || (projectType === 'frontend' ? 'react' : 'express');
   return {
-    framework: config.framework || 'express',
+    framework,
     buildCommand: config.buildCommand ?? null,
-    buildOutput: config.buildOutput || 'dist',
-    startCommand: config.startCommand || 'npm start',
-    port: config.port || 3000,
+    buildOutput: config.buildOutput || defaultBuildOutput(framework, projectType),
+    startCommand: config.startCommand ?? null,
+    port: config.port || defaultPort(framework, projectType),
     projectType,
   };
+}
+
+/**
+ * @param {string} framework
+ * @param {string} projectType
+ */
+function defaultBuildOutput(framework, projectType) {
+  if (
+    projectType === 'frontend' ||
+    ['react', 'vue', 'angular', 'svelte', 'astro', 'vanilla'].includes(framework)
+  ) {
+    return 'dist';
+  }
+  if (framework === 'nestjs') return 'dist';
+  if (framework === 'dotnet') return 'publish';
+  if (framework === 'spring' || framework === 'java') return 'target';
+  if (framework === 'go') return 'bin';
+  return '.';
+}
+
+/**
+ * @param {string} framework
+ * @param {string} projectType
+ */
+function defaultPort(framework, projectType) {
+  if (
+    projectType === 'frontend' ||
+    ['react', 'vue', 'angular', 'svelte', 'astro', 'vanilla'].includes(framework)
+  ) {
+    return 80;
+  }
+  if (['laravel', 'symfony', 'php'].includes(framework)) return 80;
+  if (['fastapi', 'django', 'python'].includes(framework)) return 8000;
+  if (framework === 'flask') return 5000;
+  if (['spring', 'java', 'go'].includes(framework)) return 8080;
+  if (framework === 'dotnet') return 5000;
+  if (framework === 'rails') return 3000;
+  if (framework === 'ruby') return 9292;
+  return 3000;
 }
 
 /**
@@ -82,9 +125,10 @@ export function generateDockerignore(config) {
     'express',
     'fastify',
     'koa',
+    'node',
   ];
-  const pythonFrameworks = ['fastapi', 'django', 'flask'];
-  const phpFrameworks = ['laravel', 'symfony'];
+  const pythonFrameworks = ['fastapi', 'django', 'flask', 'python'];
+  const phpFrameworks = ['laravel', 'symfony', 'php'];
 
   if (nodeFrameworks.includes(framework) || !framework) {
     lines.push('node_modules', 'npm-debug.log*', 'yarn-error.log*', '.npm', '');
@@ -119,7 +163,7 @@ export function generateDockerignore(config) {
     lines.push('vendor', '');
   }
 
-  if (framework === 'spring') {
+  if (framework === 'spring' || framework === 'java') {
     lines.push('target', '.gradle', 'build', '');
   }
 
@@ -131,7 +175,7 @@ export function generateDockerignore(config) {
     lines.push('bin', 'obj', '');
   }
 
-  if (framework === 'rails') {
+  if (framework === 'rails' || framework === 'ruby') {
     lines.push('tmp', 'log', 'vendor/bundle', '');
   }
 
@@ -159,6 +203,7 @@ export function generateDockerfile(config) {
     case 'express':
     case 'fastify':
     case 'koa':
+    case 'node':
       return generateNodeBackendDockerfile(settings);
     case 'fastapi':
       return generateFastapiDockerfile(settings);
@@ -166,11 +211,16 @@ export function generateDockerfile(config) {
       return generateDjangoDockerfile(settings);
     case 'flask':
       return generateFlaskDockerfile(settings);
+    case 'python':
+      return generatePythonDockerfile(settings);
     case 'laravel':
       return generateLaravelDockerfile(settings);
     case 'symfony':
       return generateSymfonyDockerfile(settings);
+    case 'php':
+      return generatePhpDockerfile(settings);
     case 'spring':
+    case 'java':
       return generateSpringDockerfile(settings);
     case 'go':
       return generateGoDockerfile(settings);
@@ -178,6 +228,8 @@ export function generateDockerfile(config) {
       return generateDotnetDockerfile(settings);
     case 'rails':
       return generateRailsDockerfile(settings);
+    case 'ruby':
+      return generateRubyDockerfile(settings);
     default:
       return generateNodeBackendDockerfile(settings);
   }
@@ -384,24 +436,58 @@ CMD ${JSON.stringify(startParts)}
 }
 
 /**
+ * Plain Python (no FastAPI/Django/Flask): optional requirements + stdlib HTTP server.
+ * @param {{ startCommand: string|null, port: number }} settings
+ */
+function generatePythonDockerfile(settings) {
+  const port = settings.port || 8000;
+  const startCmd =
+    settings.startCommand || `python -m http.server ${port} --bind 0.0.0.0`;
+  const startParts = parseCommand(startCmd);
+
+  return `${GENERATED_HEADER}
+FROM python:3.11-slim
+WORKDIR /app
+COPY requirements.txt* ./
+RUN if [ -f requirements.txt ]; then pip install --no-cache-dir -r requirements.txt; fi
+COPY . .
+EXPOSE ${port}
+CMD ${JSON.stringify(startParts)}
+`;
+}
+
+/**
  * @param {{ port: number }} settings
  */
 function generateLaravelDockerfile(settings) {
   const port = settings.port || 80;
+  // Single-process HTTP for container/K8s fitness. SSH deploys still use host
+  // php-fpm + nginx; this image must listen on EXPOSE (FPM alone listens on 9000).
+  const cmd = JSON.stringify([
+    'php',
+    'artisan',
+    'serve',
+    '--host=0.0.0.0',
+    `--port=${port}`,
+  ]);
 
   return `${GENERATED_HEADER}
 FROM composer:2 AS vendor
 WORKDIR /app
-COPY composer.json composer.lock ./
-RUN composer install --no-dev --optimize-autoloader --no-interaction
+COPY composer.json composer.lock* ./
+RUN composer install --no-dev --optimize-autoloader --no-interaction --ignore-platform-reqs
 
-FROM php:8.2-fpm-alpine
+FROM php:8.2-cli-alpine
 WORKDIR /var/www/html
+RUN apk add --no-cache icu-libs libzip \\
+  && apk add --no-cache --virtual .build-deps $PHPIZE_DEPS icu-dev libzip-dev oniguruma-dev \\
+  && docker-php-ext-install -j$(nproc) pdo_mysql mbstring zip opcache \\
+  && apk del .build-deps
 COPY --from=vendor /app/vendor ./vendor
 COPY . .
 RUN chown -R www-data:www-data storage bootstrap/cache || true
 EXPOSE ${port}
-CMD ["php-fpm"]
+CMD ${cmd}
 `;
 }
 
@@ -410,19 +496,54 @@ CMD ["php-fpm"]
  */
 function generateSymfonyDockerfile(settings) {
   const port = settings.port || 80;
+  // Built-in server binds HTTP to EXPOSE — suitable for a single-container pod.
+  // Prefer a production reverse-proxy image if you outgrow this starter template.
+  const cmd = JSON.stringify(['php', '-S', `0.0.0.0:${port}`, '-t', 'public']);
 
   return `${GENERATED_HEADER}
 FROM composer:2 AS vendor
 WORKDIR /app
-COPY composer.json composer.lock ./
-RUN composer install --no-dev --optimize-autoloader --no-interaction
+COPY composer.json composer.lock* ./
+RUN composer install --no-dev --optimize-autoloader --no-interaction --ignore-platform-reqs
 
-FROM php:8.2-fpm-alpine
+FROM php:8.2-cli-alpine
 WORKDIR /var/www/html
+RUN apk add --no-cache icu-libs libzip \\
+  && apk add --no-cache --virtual .build-deps $PHPIZE_DEPS icu-dev libzip-dev oniguruma-dev \\
+  && docker-php-ext-install -j$(nproc) pdo_mysql mbstring zip opcache \\
+  && apk del .build-deps
 COPY --from=vendor /app/vendor ./vendor
 COPY . .
 EXPOSE ${port}
-CMD ["php-fpm"]
+CMD ${cmd}
+`;
+}
+
+/**
+ * Plain PHP (no Laravel/Symfony): single-process built-in server.
+ * Docroot prefers public/ at runtime when present; optional composer install.
+ * @param {{ port: number }} settings
+ */
+function generatePhpDockerfile(settings) {
+  const port = settings.port || 80;
+  const cmd = JSON.stringify([
+    'sh',
+    '-c',
+    `d=.; [ -d public ] && d=public; exec php -S 0.0.0.0:${port} -t "$d"`,
+  ]);
+
+  return `${GENERATED_HEADER}
+FROM php:8.2-cli-alpine
+WORKDIR /var/www/html
+COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
+RUN apk add --no-cache icu-libs libzip \\
+  && apk add --no-cache --virtual .build-deps $PHPIZE_DEPS icu-dev libzip-dev oniguruma-dev \\
+  && docker-php-ext-install -j$(nproc) pdo_mysql mbstring zip opcache \\
+  && apk del .build-deps
+COPY . .
+RUN if [ -f composer.json ]; then composer install --no-dev --optimize-autoloader --no-interaction --ignore-platform-reqs; fi
+EXPOSE ${port}
+CMD ${cmd}
 `;
 }
 
@@ -438,11 +559,13 @@ FROM eclipse-temurin:17-jdk-alpine AS build
 WORKDIR /app
 COPY pom.xml ./
 COPY src ./src
-RUN apk add --no-cache maven && ${buildCmd}
+RUN apk add --no-cache maven && ${buildCmd} \\
+  && JAR=$(ls target/*.jar 2>/dev/null | grep -v '\\-plain\\.jar$' | head -n1) \\
+  && test -n "$JAR" && cp "$JAR" /app/app.jar
 
 FROM eclipse-temurin:17-jre-alpine
 WORKDIR /app
-COPY --from=build /app/target/*.jar app.jar
+COPY --from=build /app/app.jar app.jar
 EXPOSE ${port}
 CMD ["java", "-jar", "app.jar"]
 `;
@@ -458,10 +581,10 @@ function generateGoDockerfile(settings) {
   return `${GENERATED_HEADER}
 FROM golang:1.22-alpine AS build
 WORKDIR /app
-COPY go.mod go.sum ./
+COPY go.mod go.sum* ./
 RUN go mod download
 COPY . .
-RUN ${buildCmd}
+RUN mkdir -p /app/bin && ${buildCmd}
 
 FROM alpine:3.19
 WORKDIR /app
@@ -476,7 +599,8 @@ CMD ["./app"]
  * @param {{ buildCommand: string|null, buildOutput: string, startCommand: string|null, port: number }} settings
  */
 function generateDotnetDockerfile(settings) {
-  const buildCmd = settings.buildCommand || 'dotnet publish -c Release -o /app/publish';
+  // Publish into a path under WORKDIR so the runtime stage COPY path matches.
+  const buildCmd = settings.buildCommand || 'dotnet publish -c Release -o publish';
   const port = settings.port || 5000;
   const output = settings.buildOutput || 'publish';
 
@@ -502,15 +626,17 @@ CMD ["dotnet", "App.dll"]
  */
 function generateRailsDockerfile(settings) {
   const port = settings.port || 3000;
-  const startCmd = settings.startCommand || 'bundle exec puma -C config/puma.rb';
+  // Bind explicitly — puma.rb / SSH assumptions are not the container PID 1 contract.
+  const startCmd =
+    settings.startCommand || `bundle exec puma -b tcp://0.0.0.0:${port}`;
   const startParts = parseCommand(startCmd);
 
   return `${GENERATED_HEADER}
 FROM ruby:3.2-slim AS build
 WORKDIR /app
 RUN apt-get update -qq && apt-get install -y build-essential libpq-dev && rm -rf /var/lib/apt/lists/*
-COPY Gemfile Gemfile.lock ./
-RUN bundle install --without development test
+COPY Gemfile Gemfile.lock* ./
+RUN bundle config set --local without 'development test' && bundle install
 COPY . .
 RUN bundle exec rake assets:precompile || true
 
@@ -519,6 +645,28 @@ WORKDIR /app
 RUN apt-get update -qq && apt-get install -y libpq-dev && rm -rf /var/lib/apt/lists/*
 COPY --from=build /usr/local/bundle /usr/local/bundle
 COPY --from=build /app .
+EXPOSE ${port}
+CMD ${JSON.stringify(startParts)}
+`;
+}
+
+/**
+ * Plain Ruby / Rack (no Rails): Puma as foreground HTTP process.
+ * @param {{ startCommand: string|null, port: number }} settings
+ */
+function generateRubyDockerfile(settings) {
+  const port = settings.port || 9292;
+  const startCmd =
+    settings.startCommand || `bundle exec puma -b tcp://0.0.0.0:${port}`;
+  const startParts = parseCommand(startCmd);
+
+  return `${GENERATED_HEADER}
+FROM ruby:3.2-slim
+WORKDIR /app
+RUN apt-get update -qq && apt-get install -y build-essential && rm -rf /var/lib/apt/lists/*
+COPY Gemfile Gemfile.lock* ./
+RUN bundle config set --local without 'development test' && bundle install
+COPY . .
 EXPOSE ${port}
 CMD ${JSON.stringify(startParts)}
 `;
@@ -567,6 +715,11 @@ export function getDockerfileFrameworkLabel(framework) {
     flask: 'Flask',
     laravel: 'Laravel',
     symfony: 'Symfony',
+    php: 'PHP',
+    python: 'Python',
+    node: 'Node.js',
+    java: 'Java',
+    ruby: 'Ruby',
     spring: 'Spring Boot',
     go: 'Go',
     dotnet: '.NET',

@@ -222,9 +222,12 @@ describe('interpreted backend null buildCommand + source artifacts', () => {
     expect(isInterpretedBackendFramework('fastapi')).toBe(true);
     expect(isInterpretedBackendFramework('django')).toBe(true);
     expect(isInterpretedBackendFramework('flask')).toBe(true);
+    expect(isInterpretedBackendFramework('python')).toBe(true);
     expect(isInterpretedBackendFramework('laravel')).toBe(true);
     expect(isInterpretedBackendFramework('symfony')).toBe(true);
+    expect(isInterpretedBackendFramework('php')).toBe(true);
     expect(isInterpretedBackendFramework('rails')).toBe(true);
+    expect(isInterpretedBackendFramework('ruby')).toBe(true);
     expect(isInterpretedBackendFramework('express')).toBe(true);
   });
 

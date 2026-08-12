@@ -241,7 +241,7 @@ async function stageBackendArtifact(cwd, stagingDir, config) {
     await copyDirectoryIfExists(cwd, stagingDir, 'resources');
     await copyDirectoryIfExists(cwd, stagingDir, 'storage');
     await copyDirectoryIfExists(cwd, stagingDir, 'bin');
-  } else if (framework === 'spring') {
+  } else if (framework === 'spring' || framework === 'java') {
     await copyIfExists(cwd, stagingDir, 'pom.xml');
     const targetDir = path.join(cwd, 'target');
     if (await fs.pathExists(targetDir)) {
@@ -261,7 +261,7 @@ async function stageBackendArtifact(cwd, stagingDir, config) {
       await copyIfExists(cwd, stagingDir, f);
     }
     await copyDirectoryIfExists(cwd, stagingDir, settings.buildOutput || 'publish');
-  } else if (framework === 'rails') {
+  } else if (framework === 'rails' || framework === 'ruby') {
     await copyIfExists(cwd, stagingDir, 'Gemfile');
     await copyIfExists(cwd, stagingDir, 'Gemfile.lock');
     await copyIfExists(cwd, stagingDir, 'config.ru');

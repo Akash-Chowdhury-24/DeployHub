@@ -207,6 +207,9 @@ export function isInterpretedBackendFramework(framework) {
     'flask',
     'laravel',
     'symfony',
+    'php',
+    'python',
+    'ruby',
     'rails',
   ].includes(framework || '');
 }
@@ -224,21 +227,21 @@ export function describeInterpretedBackendGap(framework) {
       installCmd: 'npm ci',
     };
   }
-  if (['fastapi', 'django', 'flask'].includes(framework)) {
+  if (['fastapi', 'django', 'flask', 'python'].includes(framework)) {
     return {
       ecosystem: 'Python',
       missing: 'a pre-installed virtualenv / site-packages (artifacts only ship requirements.txt + source)',
       installCmd: 'pip install',
     };
   }
-  if (['laravel', 'symfony'].includes(framework)) {
+  if (['laravel', 'symfony', 'php'].includes(framework)) {
     return {
       ecosystem: 'PHP',
       missing: 'vendor/ (Composer dependencies are not packaged into the artifact)',
       installCmd: 'composer install',
     };
   }
-  if (framework === 'rails') {
+  if (framework === 'rails' || framework === 'ruby') {
     return {
       ecosystem: 'Ruby',
       missing: 'vendor/bundle / installed gems (artifacts only ship Gemfile + lock)',

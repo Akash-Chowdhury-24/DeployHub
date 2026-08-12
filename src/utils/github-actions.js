@@ -24,6 +24,17 @@ import {
 
 /** @typedef {'aws'|'azure'|'gcp'|'gdrive'|'dropbox'|'local'|'ftp'|'ssh'} ProviderEnvKey */
 
+/** Storage-only providers — never treat deployment method ids as storage. */
+const STORAGE_PROVIDER_IDS = new Set([
+  'aws',
+  'azure',
+  'gcp',
+  'gdrive',
+  'dropbox',
+  'local',
+  'ftp',
+]);
+
 const PROVIDER_ENV_MAP = {
   aws: [
     'AWS_ACCESS_KEY_ID',
@@ -41,13 +52,34 @@ const PROVIDER_ENV_MAP = {
   ],
   dropbox: ['DROPBOX_ACCESS_TOKEN'],
   local: [],
-  ftp: ['FTP_HOST', 'FTP_USER', 'FTP_PASSWORD'],
+  ftp: ['FTP_HOST', 'FTP_USER', 'FTP_PASSWORD', 'FTP_PORT', 'FTP_PATH'],
   ssh: DEPLOYMENT_ENV_KEYS.ssh,
   docker: DEPLOYMENT_ENV_KEYS.docker,
   ec2: DEPLOYMENT_ENV_KEYS.ec2,
   'azure-vm': DEPLOYMENT_ENV_KEYS['azure-vm'],
   'gcp-vm': DEPLOYMENT_ENV_KEYS['gcp-vm'],
   kubernetes: DEPLOYMENT_ENV_KEYS.kubernetes,
+};
+
+/** @type {Record<string, string>} */
+const STORAGE_SECRET_NOTES = {
+  AWS_ACCESS_KEY_ID: 'AWS S3 storage credential (not EC2 instance lookup)',
+  AWS_SECRET_ACCESS_KEY: 'AWS S3 storage credential (not EC2 instance lookup)',
+  AWS_BUCKET: 'AWS S3 storage bucket',
+  AWS_REGION: 'AWS S3 storage region (not EC2_LOOKUP_AWS_REGION)',
+  AZURE_CONNECTION_STRING: 'Azure Blob storage credential',
+  AZURE_CONTAINER: 'Azure Blob storage container',
+  GCP_PROJECT_ID: 'GCP Storage credential (not GCP VM instance lookup)',
+  GCP_KEY_FILE: 'GCP Storage credential (not GCP_VM_LOOKUP_KEY_FILE)',
+  GCP_BUCKET: 'GCP Storage bucket',
+  GDRIVE_CLIENT_ID: 'Google Drive storage credential',
+  GDRIVE_CLIENT_SECRET: 'Google Drive storage credential',
+  GDRIVE_REFRESH_TOKEN: 'Google Drive storage credential',
+  GDRIVE_FOLDER_ID: 'Google Drive folder',
+  DROPBOX_ACCESS_TOKEN: 'Dropbox storage credential',
+  FTP_HOST: 'FTP storage host',
+  FTP_USER: 'FTP storage user',
+  FTP_PASSWORD: 'FTP storage password',
 };
 
 const PROVIDER_LABELS = {
@@ -67,6 +99,7 @@ const PROVIDER_LABELS = {
 
 const ENV_VAR_DEFAULTS = {
   AWS_REGION: 'us-east-1',
+  EC2_LOOKUP_AWS_REGION: 'us-east-1',
   FTP_PORT: '21',
   FTP_PATH: '/uploads',
   SSH_DEPLOY_PATH: '/var/www/app',
@@ -249,12 +282,12 @@ function getBackendSetupSteps(config) {
 
   if (projectType === 'backend' || projectType === 'both') {
     const framework = config.backend?.framework || config.framework || 'express';
-    if (['express', 'nestjs', 'fastify', 'koa', 'nextjs'].includes(framework)) {
+    if (['express', 'nestjs', 'fastify', 'koa', 'nextjs', 'node'].includes(framework)) {
       steps.push(`      - uses: actions/setup-node@v4
         with:
           node-version: '20'`);
     }
-    if (['fastapi', 'django', 'flask'].includes(framework)) {
+    if (['fastapi', 'django', 'flask', 'python'].includes(framework)) {
       steps.push(`      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'`);
@@ -275,7 +308,7 @@ function getBackendSetupSteps(config) {
         with:
           dotnet-version: '8.0.x'`);
     }
-    if (framework === 'rails') {
+    if (framework === 'rails' || framework === 'ruby') {
       steps.push(`      - uses: ruby/setup-ruby@v1
         with:
           ruby-version: '3.2'
@@ -416,6 +449,7 @@ export function buildWorkflowEnvEntries(
   ]);
 
   for (const provider of storageProviders) {
+    if (!STORAGE_PROVIDER_IDS.has(provider)) continue;
     const keys = PROVIDER_ENV_MAP[provider] || [];
     for (const key of keys) {
       upsertWorkflowEnvLine(envVars, key, `\${{ secrets.${key} }}`);
@@ -737,10 +771,10 @@ function getInstallDepsCommand(config) {
     config.backend?.framework || config.framework || 'express';
   const language = config.backend?.language || config.language;
 
-  if (language === 'python' || ['fastapi', 'django', 'flask'].includes(framework)) {
+  if (language === 'python' || ['fastapi', 'django', 'flask', 'python'].includes(framework)) {
     return 'pip install -r requirements.txt';
   }
-  if (['laravel', 'symfony'].includes(framework)) {
+  if (['laravel', 'symfony', 'php'].includes(framework)) {
     return 'composer install --no-interaction';
   }
   if (framework === 'spring' || framework === 'java') {
@@ -752,7 +786,7 @@ function getInstallDepsCommand(config) {
   if (framework === 'dotnet') {
     return 'dotnet restore';
   }
-  if (framework === 'rails') {
+  if (framework === 'rails' || framework === 'ruby') {
     return 'bundle install';
   }
   return 'npm install';
@@ -1202,9 +1236,14 @@ export function getGithubSecretsChecklist(
   }
 
   for (const provider of storageProviders) {
+    if (!STORAGE_PROVIDER_IDS.has(provider)) continue;
     const keys = PROVIDER_ENV_MAP[provider] || [];
     for (const key of keys) {
-      byKey.set(key, { key, required: true });
+      byKey.set(key, {
+        key,
+        required: true,
+        note: STORAGE_SECRET_NOTES[key] || 'storage credential',
+      });
     }
   }
 
@@ -1280,18 +1319,36 @@ export function generateEnvExampleContent(
   };
 
   for (const provider of storageProviders) {
+    // Defensive: ignore accidental deploy-method ids in storageProviders
+    // (PROVIDER_ENV_MAP also maps ec2/ssh/… for workflow wiring).
+    if (!STORAGE_PROVIDER_IDS.has(provider)) continue;
     const keys = PROVIDER_ENV_MAP[provider] || [];
     if (keys.length > 0) {
       addSection(PROVIDER_LABELS[provider] || provider, keys);
     }
   }
 
+  /** @type {Set<string>} */
+  const seenDeployEnvs = new Set();
+  const cfg = {
+    ...(config || {}),
+    environments: environments || config?.environments || {},
+  };
+
   for (const envName of deployEnvironments) {
+    if (seenDeployEnvs.has(envName)) continue;
+    seenDeployEnvs.add(envName);
+
     const env = environments[envName];
     const method = getEnvMethod(env);
     if (!method) continue;
 
-    const deploySection = generateDeploymentEnvSection(method, config, environments);
+    const deploySection = generateDeploymentEnvSection(
+      method,
+      cfg,
+      environments,
+      { envName }
+    );
     if (deploySection) {
       sections.push(`${deploySection}\n`);
     }
@@ -1323,4 +1380,4 @@ export function generateEnvExampleContent(
   return `${sections.join('\n')}\n`;
 }
 
-export { PROVIDER_ENV_MAP };
+export { PROVIDER_ENV_MAP, STORAGE_PROVIDER_IDS };
