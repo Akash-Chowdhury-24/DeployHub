@@ -471,20 +471,25 @@ function generateLaravelDockerfile(settings) {
     `--port=${port}`,
   ]);
 
+  // Vendor stage copies only composer.json/lock for layer caching. Laravel's
+  // post-autoload-dump runs `php artisan package:discover`, which needs the
+  // full app — so install with --no-scripts here, then dump-autoload after COPY.
   return `${GENERATED_HEADER}
 FROM composer:2 AS vendor
 WORKDIR /app
 COPY composer.json composer.lock* ./
-RUN composer install --no-dev --optimize-autoloader --no-interaction --ignore-platform-reqs
+RUN composer install --no-dev --optimize-autoloader --no-interaction --ignore-platform-reqs --no-scripts
 
 FROM php:8.2-cli-alpine
 WORKDIR /var/www/html
+COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
 RUN apk add --no-cache icu-libs libzip \\
   && apk add --no-cache --virtual .build-deps $PHPIZE_DEPS icu-dev libzip-dev oniguruma-dev \\
   && docker-php-ext-install -j$(nproc) pdo_mysql mbstring zip opcache \\
   && apk del .build-deps
 COPY --from=vendor /app/vendor ./vendor
 COPY . .
+RUN composer dump-autoload --optimize --no-dev --no-interaction
 RUN chown -R www-data:www-data storage bootstrap/cache || true
 EXPOSE ${port}
 CMD ${cmd}
@@ -500,20 +505,24 @@ function generateSymfonyDockerfile(settings) {
   // Prefer a production reverse-proxy image if you outgrow this starter template.
   const cmd = JSON.stringify(['php', '-S', `0.0.0.0:${port}`, '-t', 'public']);
 
+  // Same as Laravel: vendor stage has no app source, so skip Composer scripts
+  // (Flex recipes / auto-scripts often need bin/console & the project tree).
   return `${GENERATED_HEADER}
 FROM composer:2 AS vendor
 WORKDIR /app
 COPY composer.json composer.lock* ./
-RUN composer install --no-dev --optimize-autoloader --no-interaction --ignore-platform-reqs
+RUN composer install --no-dev --optimize-autoloader --no-interaction --ignore-platform-reqs --no-scripts
 
 FROM php:8.2-cli-alpine
 WORKDIR /var/www/html
+COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
 RUN apk add --no-cache icu-libs libzip \\
   && apk add --no-cache --virtual .build-deps $PHPIZE_DEPS icu-dev libzip-dev oniguruma-dev \\
   && docker-php-ext-install -j$(nproc) pdo_mysql mbstring zip opcache \\
   && apk del .build-deps
 COPY --from=vendor /app/vendor ./vendor
 COPY . .
+RUN composer dump-autoload --optimize --no-dev --no-interaction
 EXPOSE ${port}
 CMD ${cmd}
 `;

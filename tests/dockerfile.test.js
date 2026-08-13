@@ -83,6 +83,27 @@ describe('dockerfile generation', () => {
     expect(dockerfile).not.toContain('FROM php:8.2-fpm-alpine');
   });
 
+  test('Laravel vendor stage skips scripts; final stage dump-autoload after COPY', () => {
+    const dockerfile = generateDockerfile({
+      projectType: 'backend',
+      framework: 'laravel',
+      port: 80,
+    });
+
+    expect(dockerfile).toMatch(
+      /FROM composer:2 AS vendor[\s\S]*composer install[\s\S]*--no-scripts/
+    );
+    expect(dockerfile).toContain('composer dump-autoload --optimize --no-dev --no-interaction');
+    const vendorInstall = dockerfile.indexOf(
+      'composer install --no-dev --optimize-autoloader --no-interaction --ignore-platform-reqs --no-scripts'
+    );
+    const copyApp = dockerfile.indexOf('COPY . .');
+    const dumpAutoload = dockerfile.indexOf('composer dump-autoload');
+    expect(vendorInstall).toBeGreaterThan(-1);
+    expect(copyApp).toBeGreaterThan(vendorInstall);
+    expect(dumpAutoload).toBeGreaterThan(copyApp);
+  });
+
   test('generates Symfony Dockerfile that binds PHP built-in server to EXPOSE', () => {
     const dockerfile = generateDockerfile({
       projectType: 'backend',
@@ -95,6 +116,22 @@ describe('dockerfile generation', () => {
     expect(dockerfile).toContain('-t');
     expect(dockerfile).toContain('public');
     expect(dockerfile).not.toContain('CMD ["php-fpm"]');
+  });
+
+  test('Symfony vendor stage also uses --no-scripts + final dump-autoload', () => {
+    const dockerfile = generateDockerfile({
+      projectType: 'backend',
+      framework: 'symfony',
+      port: 80,
+    });
+
+    expect(dockerfile).toContain(
+      'composer install --no-dev --optimize-autoloader --no-interaction --ignore-platform-reqs --no-scripts'
+    );
+    expect(dockerfile).toContain('composer dump-autoload --optimize --no-dev --no-interaction');
+    expect(dockerfile.indexOf('COPY . .')).toBeLessThan(
+      dockerfile.indexOf('composer dump-autoload')
+    );
   });
 
   test('generates plain PHP Dockerfile with built-in HTTP server (not php-fpm)', () => {
