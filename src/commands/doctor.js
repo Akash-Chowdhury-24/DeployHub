@@ -30,6 +30,16 @@ import {
 import { formatPasswordlessSudoGuidance } from '../utils/nginx.js';
 import { checkImagePullability } from '../utils/docker-image-deploy.js';
 import { namespaceExists } from '../utils/kubernetes-namespace.js';
+import { resolvePhpVersion } from '../utils/php-version.js';
+import {
+  buildPhpFpmUnitListCommand,
+  formatPhpFpmMissingError,
+  formatPhpFpmVersionMismatchError,
+  parsePhpFpmUnitList,
+  parsePhpMajorMinor,
+  pickPhpFpmUnitName,
+  preferredPhpFpmUnitName,
+} from '../utils/php-fpm.js';
 
 /**
  * @typedef {{ name: string, pass: boolean, message: string }} CheckResult
@@ -683,15 +693,101 @@ async function runBackendProcessChecks(config, envName, deployType = 'ssh') {
   }
 
   if (PHP_FRAMEWORKS.has(framework)) {
+    const phpVersion = resolvePhpVersion(config);
+    const preferredUnit = preferredPhpFpmUnitName(phpVersion);
+
+    checks.push(
+      await runCheck('PHP CLI', async () => {
+        const result = await provider.runRemoteCheck('command -v php >/dev/null 2>&1 && php -v');
+        if (!result.pass) {
+          return {
+            name: 'PHP CLI',
+            pass: false,
+            message:
+              `php not found on PATH — install PHP ${phpVersion} CLI on the server ` +
+              `(needed for composer / artisan during SSH deploy)`,
+          };
+        }
+        const remoteMm = parsePhpMajorMinor(result.message);
+        if (remoteMm && remoteMm !== phpVersion) {
+          return {
+            name: 'PHP CLI',
+            pass: false,
+            message:
+              `php on server reports ${remoteMm} (from php -v), but this project expects ${phpVersion} ` +
+              `(phpVersion / backend.phpVersion / default). Install matching PHP or update deployhub.config.json.`,
+          };
+        }
+        return {
+          name: 'PHP CLI',
+          pass: true,
+          message: remoteMm
+            ? `php ${remoteMm} found on PATH (matches project)`
+            : `php found on PATH (${result.message.split('\n')[0] || 'ok'})`,
+        };
+      })
+    );
+
+    checks.push(
+      await runCheck('Composer', async () => {
+        const result = await provider.runRemoteCheck('command -v composer');
+        if (result.pass) {
+          return { name: 'Composer', pass: true, message: 'composer found on PATH' };
+        }
+        return {
+          name: 'Composer',
+          pass: false,
+          message:
+            'composer not found on PATH — install Composer on the server ' +
+            '(SSH deploy runs `composer install --no-dev` after extract)',
+        };
+      })
+    );
+
     checks.push(
       await runCheck('php-fpm', async () => {
-        const result = await provider.runRemoteCheck(
-          'systemctl is-active php8.2-fpm || systemctl is-active php-fpm'
-        );
-        if (result.pass && result.message.includes('active')) {
-          return { name: 'php-fpm', pass: true, message: 'php-fpm running' };
+        const listed = await provider.runRemoteCheck(buildPhpFpmUnitListCommand());
+        const units = parsePhpFpmUnitList(listed.message || '');
+        const pick = pickPhpFpmUnitName(units, phpVersion);
+
+        if (!pick) {
+          return {
+            name: 'php-fpm',
+            pass: false,
+            message: formatPhpFpmMissingError(phpVersion, units),
+          };
         }
-        return { name: 'php-fpm', pass: false, message: 'php-fpm not running' };
+
+        if (pick.match === 'other-version') {
+          return {
+            name: 'php-fpm',
+            pass: false,
+            message: formatPhpFpmVersionMismatchError(phpVersion, pick.unit),
+          };
+        }
+
+        const active = await provider.runRemoteCheck(
+          `systemctl is-active ${pick.unit}`
+        );
+        if (active.pass && String(active.message).includes('active')) {
+          const note =
+            pick.match === 'generic'
+              ? ` (generic php-fpm; preferred ${preferredUnit} not installed — OK on Amazon Linux/RHEL)`
+              : '';
+          return {
+            name: 'php-fpm',
+            pass: true,
+            message: `${pick.unit} running${note}`,
+          };
+        }
+
+        return {
+          name: 'php-fpm',
+          pass: false,
+          message:
+            `${pick.unit} is installed but not active (systemctl is-active: ${active.message}). ` +
+            `Start it with: sudo systemctl enable --now ${pick.unit}`,
+        };
       })
     );
 

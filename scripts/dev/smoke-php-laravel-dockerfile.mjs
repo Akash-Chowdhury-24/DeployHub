@@ -15,16 +15,44 @@ import path from 'path';
 import os from 'os';
 import { execa } from 'execa';
 import { generateDockerfile } from '../../src/utils/dockerfile.js';
+import {
+  DEFAULT_PHP_VERSION,
+  resolvePhpVersion,
+} from '../../src/utils/php-version.js';
 
 const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'dh-php-laravel-df-'));
 const tag = 'deployhub-php-smoke-laravel-scripts:local';
 const hostPort = 18082;
 
-const dockerfile = generateDockerfile({
+/** Fixture pins the same key CI/Dockerfile share — regression if FROM drifts. */
+const fixturePhpVersion = DEFAULT_PHP_VERSION;
+
+const config = {
   projectType: 'backend',
   framework: 'laravel',
+  language: 'php',
   port: 8080,
-});
+  phpVersion: fixturePhpVersion,
+};
+
+const dockerfile = generateDockerfile(config);
+const expectedFrom = `FROM php:${resolvePhpVersion(config)}-cli-alpine`;
+
+if (!dockerfile.includes(expectedFrom)) {
+  throw new Error(
+    `Generated Dockerfile missing runtime base "${expectedFrom}".\n` +
+      `Got FROM lines:\n${dockerfile
+        .split('\n')
+        .filter((l) => l.startsWith('FROM '))
+        .join('\n')}`
+  );
+}
+if (/FROM php:8\.2-cli-alpine/.test(dockerfile)) {
+  throw new Error(
+    'Generated Dockerfile still hardcodes php:8.2-cli-alpine (stale base image)'
+  );
+}
+console.log(`OK: runtime stage uses ${expectedFrom} (phpVersion=${fixturePhpVersion})`);
 
 await fs.writeFile(path.join(tmp, 'Dockerfile'), dockerfile);
 await fs.writeFile(
@@ -40,7 +68,7 @@ await fs.writeJson(
     description: 'Minimal Laravel-shaped fixture for Dockerfile smoke',
     type: 'project',
     require: {
-      php: '>=8.2',
+      php: '>=8.4.1',
     },
     autoload: {
       'psr-4': {

@@ -651,8 +651,8 @@ All JS frontends share the same install/build flow: `npm ci` → `npm run build`
 
 - **Detect:** `composer.json` with `laravel/framework` or `symfony/framework-bundle`.
 - **Install:** Composer (on CI and server).
-- **CI runtime:** Generated workflows install PHP via `shivammathur/setup-php@v2` with Composer. Default version is **8.4** (meets current Laravel platform requirements). Override with `"phpVersion": "8.3"` at the config root or under `"backend"` in `deployhub.config.json`, then run `deployhub sync-workflows`.
-- **Deploy:** SSH with PHP-FPM or `php artisan` for Laravel.
+- **CI / Docker runtime:** Generated workflows install PHP via `shivammathur/setup-php@v2`, and PHP Dockerfiles use `php:{version}-cli-alpine` (verified tag pattern, e.g. `php:8.4-cli-alpine`). Both share `resolvePhpVersion()` — default **8.4**. Override with `"phpVersion": "8.3"` at the config root or under `"backend"` in `deployhub.config.json`, then regenerate the Dockerfile (delete the existing one so DeployHub can rewrite it) and run `deployhub sync-workflows` for CI.
+- **Deploy (SSH):** Assumes host php-fpm + nginx are already installed and configured for the deploy path. Restarts `php{version}-fpm` when present (from `resolvePhpVersion()`, default **8.4** → `php8.4-fpm`), or generic `php-fpm` on Amazon Linux/RHEL. Runs remote `composer install --no-dev` (and Laravel migrate/config:cache). Config `startCommand` (e.g. `php artisan serve`) is **not** used on SSH — FPM+nginx only.
 
 > ⚠️ **PHP-FPM deployments restart the FPM service for the ENTIRE host on every deploy.** If you run multiple DeployHub-managed environments on the same server, deploying ANY of them will briefly interrupt in-flight requests for ALL of them. For production use with multiple environments, either use separate hosts per environment, or set up per-environment PHP-FPM pools manually (not yet automated by DeployHub).
 

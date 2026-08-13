@@ -13,8 +13,13 @@ jest.unstable_mockModule('node-ssh', () => ({
     async putFile() {}
     async execCommand(command) {
       execCommands.push(command);
-      if (/\btest -f\b/.test(String(command))) {
+      const cmd = String(command);
+      if (/\btest -f\b/.test(cmd)) {
         return { code: 1, stdout: '', stderr: '' };
+      }
+      // PHP-FPM unit discovery (Debian/Ubuntu-style versioned unit)
+      if (/list-unit-files/.test(cmd) && /php/.test(cmd)) {
+        return { code: 0, stdout: 'php8.4-fpm.service\tenabled\n', stderr: '' };
       }
       return { code: 0, stdout: 'ok', stderr: '' };
     }
@@ -219,7 +224,9 @@ describe('backend language process isolation (multi-env same host)', () => {
     const joined = execCommands.join('\n');
     expect(joined).toMatch(/composer install/);
     expect(joined).toMatch(/php artisan migrate/);
-    expect(joined).toMatch(/systemctl restart php8\.2-fpm/);
+    expect(joined).toMatch(/list-unit-files/);
+    expect(joined).toMatch(/systemctl restart ['"]?php8\.4-fpm['"]?/);
+    expect(joined).not.toMatch(/systemctl restart php8\.2-fpm/);
     expect(joined).not.toMatch(/pkill/);
   });
 

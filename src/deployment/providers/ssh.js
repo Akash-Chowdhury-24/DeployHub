@@ -13,6 +13,15 @@ import {
 import { resolvePm2AppName } from '../../utils/pm2-app-name.js';
 import { shellQuote, formatRemoteCommandFailure } from '../../utils/shell-quote.js';
 import { extractGunicornTarget } from '../../utils/python-app-target.js';
+import { resolvePhpVersion } from '../../utils/php-version.js';
+import {
+  buildPhpFpmUnitListCommand,
+  formatPhpFpmMissingError,
+  formatPhpFpmVersionMismatchError,
+  parsePhpFpmUnitList,
+  pickPhpFpmUnitName,
+  preferredPhpFpmUnitName,
+} from '../../utils/php-fpm.js';
 
 /** @type {Set<string>} */
 const NODE_FRAMEWORKS = new Set(['express', 'nestjs', 'fastify', 'koa', 'nextjs', 'node']);
@@ -389,13 +398,24 @@ export function createSshProvider(config, envName, env = process.env) {
     if (PHP_FRAMEWORKS.has(framework)) {
       // PHP uses a host-wide `systemctl restart php*-fpm` (see README PHP warning).
       // Per-env isolation is Nginx site name + deploy path — not automated FPM pools.
+      // startCommand (e.g. php artisan serve) is intentionally unused on SSH — FPM+nginx only.
+      const phpVersion = resolvePhpVersion(config);
+      const preferredUnit = preferredPhpFpmUnitName(phpVersion);
+      log.info(
+        `PHP backend detected — using php-fpm+nginx (prefer ${preferredUnit}, else php-fpm); ` +
+          `startCommand is not used for this method`
+      );
+
       await exec(ssh, `cd ${dir} && composer install --no-dev`);
       if (framework === 'laravel') {
         await exec(ssh, `cd ${dir} && php artisan migrate --force`);
         await exec(ssh, `cd ${dir} && php artisan config:cache`);
       }
-      await exec(ssh, 'sudo systemctl restart php8.2-fpm');
-      await exec(ssh, 'sudo systemctl reload nginx');
+
+      const fpmUnit = await resolveRemotePhpFpmUnit(ssh, phpVersion);
+      log.info(`Restarting PHP-FPM service: ${fpmUnit}`);
+      await exec(ssh, `sudo systemctl restart ${sh(fpmUnit)}`);
+      await reloadNginx(ssh);
       return;
     }
 
@@ -439,6 +459,38 @@ export function createSshProvider(config, envName, env = process.env) {
       `cd ${dir} && pm2 restart ${sh(appName)} || pm2 start npm --name ${sh(appName)} -- start`
     );
     await exec(ssh, 'pm2 save');
+  }
+
+  /**
+   * Resolve the php-fpm systemd unit on the remote host.
+   * Prefers php{version}-fpm (Debian/Ubuntu), then php-fpm (RHEL/Amazon Linux).
+   * Throws if nothing usable is installed — never restarts a guessed missing unit.
+   *
+   * @param {import('node-ssh').NodeSSH} ssh
+   * @param {string} phpVersion
+   * @returns {Promise<string>}
+   */
+  async function resolveRemotePhpFpmUnit(ssh, phpVersion) {
+    const listCmd = buildPhpFpmUnitListCommand();
+    const listed = await ssh.execCommand(listCmd);
+    const units = parsePhpFpmUnitList(listed.stdout || '');
+    const pick = pickPhpFpmUnitName(units, phpVersion);
+
+    if (pick?.match === 'exact' || pick?.match === 'generic') {
+      if (pick.match === 'generic') {
+        log.info(
+          `Preferred ${preferredPhpFpmUnitName(phpVersion)} not installed; ` +
+            `using generic php-fpm (typical on Amazon Linux/RHEL)`
+        );
+      }
+      return pick.unit;
+    }
+
+    if (pick?.match === 'other-version') {
+      throw new Error(formatPhpFpmVersionMismatchError(phpVersion, pick.unit));
+    }
+
+    throw new Error(formatPhpFpmMissingError(phpVersion, units));
   }
 
   /**

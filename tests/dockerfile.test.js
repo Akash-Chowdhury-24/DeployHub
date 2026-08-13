@@ -75,12 +75,41 @@ describe('dockerfile generation', () => {
       port: 80,
     });
 
-    expect(dockerfile).toContain('FROM php:8.2-cli-alpine');
+    expect(dockerfile).toContain('FROM php:8.4-cli-alpine');
     expect(dockerfile).toContain('EXPOSE 80');
     expect(dockerfile).toContain('artisan');
     expect(dockerfile).toContain('serve');
     expect(dockerfile).not.toContain('php-fpm');
     expect(dockerfile).not.toContain('FROM php:8.2-fpm-alpine');
+    expect(dockerfile).not.toContain('FROM php:8.2-cli-alpine');
+  });
+
+  test('Laravel Dockerfile PHP base image follows phpVersion / default 8.4', () => {
+    const defaulted = generateDockerfile({
+      projectType: 'backend',
+      framework: 'laravel',
+      port: 80,
+    });
+    expect(defaulted).toMatch(/^FROM php:8\.4-cli-alpine$/m);
+
+    const overridden = generateDockerfile({
+      projectType: 'backend',
+      framework: 'laravel',
+      port: 80,
+      phpVersion: '8.3',
+    });
+    expect(overridden).toMatch(/^FROM php:8\.3-cli-alpine$/m);
+    expect(overridden).not.toContain('FROM php:8.4-cli-alpine');
+
+    const backendOverride = generateDockerfile({
+      projectType: 'backend',
+      framework: 'laravel',
+      port: 80,
+      phpVersion: '8.3',
+      backend: { framework: 'laravel', phpVersion: '8.4' },
+    });
+    // backend.phpVersion wins over top-level
+    expect(backendOverride).toMatch(/^FROM php:8\.4-cli-alpine$/m);
   });
 
   test('Laravel vendor stage skips scripts; final stage dump-autoload after COPY', () => {
@@ -111,7 +140,7 @@ describe('dockerfile generation', () => {
       port: 80,
     });
 
-    expect(dockerfile).toContain('FROM php:8.2-cli-alpine');
+    expect(dockerfile).toContain('FROM php:8.4-cli-alpine');
     expect(dockerfile).toContain('0.0.0.0:80');
     expect(dockerfile).toContain('-t');
     expect(dockerfile).toContain('public');
@@ -141,7 +170,7 @@ describe('dockerfile generation', () => {
       port: 8080,
     });
 
-    expect(dockerfile).toContain('FROM php:8.2-cli-alpine');
+    expect(dockerfile).toContain('FROM php:8.4-cli-alpine');
     expect(dockerfile).toContain('EXPOSE 8080');
     expect(dockerfile).toContain('php -S 0.0.0.0:8080');
     expect(dockerfile).toContain('[ -d public ]');

@@ -22,9 +22,9 @@ import {
   getEnabledEnvironmentNames,
   isEnvEnabled,
 } from '../core/environments.js';
+import { resolvePhpVersion } from './php-version.js';
 
-/** Default PHP for CI when config does not set `phpVersion` / `backend.phpVersion`. */
-export const DEFAULT_PHP_VERSION = '8.4';
+export { DEFAULT_PHP_VERSION, resolvePhpVersion } from './php-version.js';
 
 /** @typedef {'aws'|'azure'|'gcp'|'gdrive'|'dropbox'|'local'|'ftp'|'ssh'} ProviderEnvKey */
 
@@ -269,27 +269,6 @@ function getGithubGitConfigStep() {
             git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
             git config --global url."https://github.com/".insteadOf "git@github.com:"
           fi`;
-}
-
-/**
- * Resolve PHP version for CI setup-php.
- * Order: `backend.phpVersion` → top-level `phpVersion` → {@link DEFAULT_PHP_VERSION} (`8.4`).
- * Set either config key in deployhub.config.json to pin a different runtime
- * (e.g. `"phpVersion": "8.3"` or `"backend": { "phpVersion": "8.3" }`).
- *
- * @param {import('../core/config.js').DeployHubConfig} [config]
- * @returns {string}
- */
-export function resolvePhpVersion(config) {
-  const fromBackend = config?.backend?.phpVersion;
-  if (typeof fromBackend === 'string' && fromBackend.trim()) {
-    return fromBackend.trim();
-  }
-  const fromRoot = config?.phpVersion;
-  if (typeof fromRoot === 'string' && fromRoot.trim()) {
-    return fromRoot.trim();
-  }
-  return DEFAULT_PHP_VERSION;
 }
 
 /**
