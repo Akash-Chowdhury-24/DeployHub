@@ -651,6 +651,7 @@ All JS frontends share the same install/build flow: `npm ci` → `npm run build`
 
 - **Detect:** `composer.json` with `laravel/framework` or `symfony/framework-bundle`.
 - **Install:** Composer (on CI and server).
+- **CI runtime:** Generated workflows install PHP via `shivammathur/setup-php@v2` with Composer. Default version is **8.4** (meets current Laravel platform requirements). Override with `"phpVersion": "8.3"` at the config root or under `"backend"` in `deployhub.config.json`, then run `deployhub sync-workflows`.
 - **Deploy:** SSH with PHP-FPM or `php artisan` for Laravel.
 
 > ⚠️ **PHP-FPM deployments restart the FPM service for the ENTIRE host on every deploy.** If you run multiple DeployHub-managed environments on the same server, deploying ANY of them will briefly interrupt in-flight requests for ALL of them. For production use with multiple environments, either use separate hosts per environment, or set up per-environment PHP-FPM pools manually (not yet automated by DeployHub).
@@ -695,7 +696,9 @@ git commit -m "Add DeployHub CI"
 2. Add every secret listed at the end of `deployhub init` (storage + deployment).
 3. Push to `main` or `master` — the deploy workflow triggers on push.
 
-The deploy workflow (`deployhub.yml`) installs the correct language runtime (Node, Python, Java, Go, .NET, Ruby) based on your `deployhub.config.json`, installs DeployHub, runs `deployhub build`, and uses your secrets.
+The deploy workflow (`deployhub.yml`) installs the correct language runtime (Node, Python, PHP, Java, Go, .NET, Ruby) based on your `deployhub.config.json`, installs DeployHub, runs `deployhub build`, and uses your secrets. For PHP projects, CI uses `shivammathur/setup-php` (default **8.4**; override with `phpVersion` / `backend.phpVersion`).
+
+When an environment uses Kubernetes, the workflow installs `kubectl` and writes kubeconfig from secrets — but only when that run actually needs cluster access (push with a push-triggered k8s env, or workflow_dispatch / rollback targeting a k8s env, `all`, or blank). Plain pushes that only auto-deploy non-k8s environments (e.g. EC2 development) skip those steps.
 
 To run a deploy manually: **Actions → DeployHub → Run workflow**.
 
@@ -1002,7 +1005,7 @@ DeployHub detects whether the server uses Debian-style `sites-available` or RHEL
 
 **What DeployHub automates:**
 - Starter `k8s/deployment.yaml` and `k8s/service.yaml` when no manifests exist (skipped if you already have a `k8s/` directory or root-level Kubernetes YAML files)
-- GitHub Actions installs `kubectl` on the CI runner and writes kubeconfig from secrets (no local `kubectl` required for the automated push-to-main deploy path)
+- GitHub Actions installs `kubectl` on the CI runner and writes kubeconfig from secrets when the run targets a Kubernetes environment (skipped on push when k8s is manual-only)
 - Lists `kubectl` contexts during `init` for easy selection
 - Auto-detects `~/.kube/config`
 - Complete `.env.example` for kubeconfig, context, namespace, and registry settings

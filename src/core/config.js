@@ -20,6 +20,8 @@ import {
 const SideConfigSchema = z.object({
   framework: z.string(),
   language: z.string().optional(),
+  /** PHP runtime for CI (`shivammathur/setup-php`); e.g. `"8.4"`. */
+  phpVersion: z.string().optional(),
   buildCommand: z.string().nullable().optional(),
   startCommand: z.string().nullable().optional(),
   buildOutput: z.string().optional(),
@@ -81,6 +83,11 @@ const ConfigSchema = z.object({
   projectType: z.enum(['frontend', 'backend', 'both']).default('frontend'),
   framework: z.string().optional(),
   language: z.string().optional(),
+  /**
+   * PHP runtime for generated GitHub Actions (`shivammathur/setup-php`).
+   * Prefer `backend.phpVersion` for backend/both projects. Default when unset: `8.4`.
+   */
+  phpVersion: z.string().optional(),
   buildCommand: z.string().nullable().optional(),
   startCommand: z.string().nullable().optional(),
   buildOutput: z.string().optional(),

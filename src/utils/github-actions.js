@@ -18,9 +18,13 @@ import {
 } from '../deployment/deployment-env.js';
 import {
   getEnvMethod,
+  getEnvTrigger,
   getEnabledEnvironmentNames,
   isEnvEnabled,
 } from '../core/environments.js';
+
+/** Default PHP for CI when config does not set `phpVersion` / `backend.phpVersion`. */
+export const DEFAULT_PHP_VERSION = '8.4';
 
 /** @typedef {'aws'|'azure'|'gcp'|'gdrive'|'dropbox'|'local'|'ftp'|'ssh'} ProviderEnvKey */
 
@@ -268,6 +272,40 @@ function getGithubGitConfigStep() {
 }
 
 /**
+ * Resolve PHP version for CI setup-php.
+ * Order: `backend.phpVersion` → top-level `phpVersion` → {@link DEFAULT_PHP_VERSION} (`8.4`).
+ * Set either config key in deployhub.config.json to pin a different runtime
+ * (e.g. `"phpVersion": "8.3"` or `"backend": { "phpVersion": "8.3" }`).
+ *
+ * @param {import('../core/config.js').DeployHubConfig} [config]
+ * @returns {string}
+ */
+export function resolvePhpVersion(config) {
+  const fromBackend = config?.backend?.phpVersion;
+  if (typeof fromBackend === 'string' && fromBackend.trim()) {
+    return fromBackend.trim();
+  }
+  const fromRoot = config?.phpVersion;
+  if (typeof fromRoot === 'string' && fromRoot.trim()) {
+    return fromRoot.trim();
+  }
+  return DEFAULT_PHP_VERSION;
+}
+
+/**
+ * @param {import('../core/config.js').DeployHubConfig} [config]
+ * @returns {boolean}
+ */
+function isPhpProject(config) {
+  if (!config) return false;
+  const projectType = config.projectType || 'frontend';
+  if (projectType !== 'backend' && projectType !== 'both') return false;
+  const framework = config.backend?.framework || config.framework || '';
+  const language = config.backend?.language || config.language || '';
+  return language === 'php' || ['laravel', 'symfony', 'php'].includes(framework);
+}
+
+/**
  * @param {import('../core/config.js').DeployHubConfig} [config]
  * @returns {string[]}
  */
@@ -291,6 +329,14 @@ function getBackendSetupSteps(config) {
       steps.push(`      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'`);
+    }
+    if (isPhpProject(config)) {
+      const phpVersion = resolvePhpVersion(config);
+      steps.push(`      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '${phpVersion}'
+          tools: composer`);
     }
     if (['spring', 'java'].includes(framework)) {
       steps.push(`      - uses: actions/setup-java@v4
@@ -363,17 +409,68 @@ function resolveKubeconfigWorkflowSecretName(deployEnvironments, environments, c
 }
 
 /**
+ * GitHub Actions `if:` so kubectl/kubeconfig only run when this job needs k8s.
+ * - Push: only when at least one push-triggered env uses kubernetes (skip when push
+ *   only deploys EC2/SSH/etc. and k8s is manual-only).
+ * - workflow_dispatch / rollback: when selected env is k8s, `all`, or blank
+ *   (blank = deploy/rollback all enabled envs).
+ * Returns null when every enabled env is kubernetes (steps always needed).
+ *
+ * @param {string[]} deployEnvironments
+ * @param {Record<string, { type?: string, method?: string, trigger?: string }>} environments
+ * @param {'deploy'|'rollback'} [kind]
+ * @returns {string|null}
+ */
+function getKubernetesSetupIfExpression(
+  deployEnvironments,
+  environments,
+  kind = 'deploy'
+) {
+  const k8sNames = deployEnvironments.filter(
+    (n) => getEnvMethod(environments[n]) === 'kubernetes'
+  );
+  if (k8sNames.length === 0) return null;
+
+  const nonK8s = deployEnvironments.filter(
+    (n) => getEnvMethod(environments[n]) !== 'kubernetes'
+  );
+  // All enabled envs are kubernetes — setup is always required.
+  if (nonK8s.length === 0) return null;
+
+  const dispatchNeedK8s = [
+    ...k8sNames.map((n) => `inputs.environment == '${n}'`),
+    `inputs.environment == 'all'`,
+    `inputs.environment == ''`,
+  ].join(' || ');
+
+  if (kind === 'rollback') {
+    return `github.event_name == 'workflow_dispatch' && (${dispatchNeedK8s})`;
+  }
+
+  const pushK8s = k8sNames.filter(
+    (n) => getEnvTrigger(environments[n]) === 'push'
+  );
+  if (pushK8s.length > 0) {
+    return `github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && (${dispatchNeedK8s}))`;
+  }
+  // Manual-only kubernetes: never configure kubeconfig on plain push.
+  return `github.event_name == 'workflow_dispatch' && (${dispatchNeedK8s})`;
+}
+
+/**
  * @param {string} [kubeconfigSecretName]
+ * @param {string|null} [ifExpression]
  * @returns {string}
  */
-function getKubernetesSetupSteps(kubeconfigSecretName = 'KUBECONFIG') {
+function getKubernetesSetupSteps(kubeconfigSecretName = 'KUBECONFIG', ifExpression = null) {
   // One kubeconfig file per job — see resolveKubeconfigWorkflowSecretName LIMITATION.
-  return `      - name: Setup kubectl
+  const ifLine = ifExpression ? `\n        if: ${ifExpression}` : '';
+  return `      - name: Setup kubectl${ifLine}
         uses: azure/setup-kubectl@v4
         with:
           version: '${KUBECTL_VERSION}'
 
-      - name: Configure kubeconfig
+      - name: Configure kubeconfig${ifLine}
         env:
           KUBECONFIG_SECRET: \${{ secrets.${kubeconfigSecretName} }}
         run: |
@@ -580,8 +677,13 @@ export function generateWorkflowYaml(
     environments,
     config
   );
+  const k8sIf = getKubernetesSetupIfExpression(
+    allDeployNames,
+    environments,
+    'deploy'
+  );
   const kubernetesSteps = hasKubernetesDeploy(allDeployNames, environments)
-    ? `${getKubernetesSetupSteps(kubeconfigSecret)}\n`
+    ? `${getKubernetesSetupSteps(kubeconfigSecret, k8sIf)}\n`
     : '';
 
   const projectType = config?.projectType || 'frontend';
@@ -688,6 +790,13 @@ export function generateRollbackWorkflowYaml(
   const envBlock = formatWorkflowEnvBlock(envVars);
 
   const installSpec = getCliInstallSpec(cliSource);
+  // Rollback does not generally install project deps; PHP is the exception
+  // (composer install) so we only inject setup-php here — not other backends.
+  const phpSetupSteps = isPhpProject(config)
+    ? [...new Set(getBackendSetupSteps(config))]
+        .filter((s) => s.includes('setup-php'))
+        .join('\n')
+    : '';
   const githubGitConfigStep = isGithubCliSource(cliSource)
     ? `${getGithubGitConfigStep()}\n`
     : '';
@@ -696,13 +805,24 @@ export function generateRollbackWorkflowYaml(
     environments,
     config
   );
+  const k8sIf = getKubernetesSetupIfExpression(
+    allDeployNames,
+    environments,
+    'rollback'
+  );
   const kubernetesSteps = hasKubernetesDeploy(allDeployNames, environments)
-    ? `${getKubernetesSetupSteps(kubeconfigSecret)}\n`
+    ? `${getKubernetesSetupSteps(kubeconfigSecret, k8sIf)}\n`
     : '';
 
   const rollbackCmd = getCliRollbackCommand();
   const envChoiceOptions = formatEnvironmentChoiceOptions(environments);
   const hasEnvs = envNames.length > 0;
+
+  const phpInstallStep = isPhpProject(config)
+    ? `      - name: Install project dependencies
+        run: ${getInstallDepsCommand(config)}
+`
+    : '';
 
   const environmentInput = hasEnvs
     ? `      environment:
@@ -747,10 +867,10 @@ ${environmentInput}jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+${phpSetupSteps ? `${phpSetupSteps}\n` : ''}      - uses: actions/setup-node@v4
         with:
           node-version: '20'
-${kubernetesSteps}${githubGitConfigStep}      - name: Install DeployHub CLI
+${kubernetesSteps}${githubGitConfigStep}${phpInstallStep}      - name: Install DeployHub CLI
         run: npm install ${installSpec} --no-save
       - name: Rollback
         env:
@@ -774,7 +894,7 @@ function getInstallDepsCommand(config) {
   if (language === 'python' || ['fastapi', 'django', 'flask', 'python'].includes(framework)) {
     return 'pip install -r requirements.txt';
   }
-  if (['laravel', 'symfony', 'php'].includes(framework)) {
+  if (language === 'php' || ['laravel', 'symfony', 'php'].includes(framework)) {
     return 'composer install --no-interaction';
   }
   if (framework === 'spring' || framework === 'java') {
