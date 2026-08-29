@@ -55,7 +55,7 @@ export const SSH_BACKEND_ENV_VARS = [
   {
     key: 'SSH_APP_NAME',
     comment: [
-      'Process name used by PM2 when restarting your Node.js backend.',
+      'Env-scoped process identity: PM2 app name (Node), DEPLOYHUB_APP / PID markers (Python, Java, Go, .NET, Rails), and related resource names. Not the php-fpm systemd unit.',
     ],
     example: 'my-api',
     when: 'backend',

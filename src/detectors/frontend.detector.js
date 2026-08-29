@@ -67,7 +67,7 @@ const FRAMEWORKS = {
       language: 'node',
       buildCommand: 'npm run build',
       startCommand: null,
-      buildOutput: 'public',
+      buildOutput: 'dist',
       testCommand: 'npm test',
       port: 80,
     },

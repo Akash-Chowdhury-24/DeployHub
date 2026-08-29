@@ -19,7 +19,6 @@ import {
   getEnvSettings,
   resolveDefaultEnvironmentName,
 } from '../core/config.js';
-import { detectDjangoWsgiPackageDir } from '../utils/python-app-target.js';
 
 /**
  * @param {string} cwd
@@ -183,66 +182,117 @@ async function stageFrontendArtifact(cwd, stagingDir, config) {
  * @param {string} stagingDir
  * @param {import('../core/config.js').DeployHubConfig} config
  */
+/** Dirs/files that must never be packed into a backend artifact. */
+const BACKEND_STAGE_EXCLUDE = new Set([
+  'node_modules',
+  '.git',
+  '.github',
+  'artifact',
+  '.deployhub',
+  '.deployhub-storage',
+  '.deployhub-restore',
+  '.deployhub-doctor-test',
+  'coverage',
+  '.venv',
+  'venv',
+  '__pycache__',
+  'vendor',
+  '.idea',
+  '.vscode',
+  '.nyc_output',
+]);
+
+/**
+ * Copy the backend project tree into staging, skipping install caches and VCS.
+ * Allowlists previously omitted root entrypoints (server.js, main.go, index.php)
+ * which made SSH `npm start` / binary start fail even though CI built fine.
+ *
+ * @param {string} cwd
+ * @param {string} stagingDir
+ * @param {Set<string>} extraExclude
+ */
+async function copyBackendSourceTree(cwd, stagingDir, extraExclude = new Set()) {
+  const exclude = new Set([...BACKEND_STAGE_EXCLUDE, ...extraExclude]);
+  let entries = [];
+  try {
+    entries = await fs.readdir(cwd, { withFileTypes: true });
+  } catch {
+    return;
+  }
+
+  for (const ent of entries) {
+    if (exclude.has(ent.name)) continue;
+    if (ent.name.startsWith('.env') && ent.name !== '.env.example') continue;
+    const src = path.join(cwd, ent.name);
+    const dest = path.join(stagingDir, ent.name);
+    if (ent.isDirectory()) {
+      await fs.copy(src, dest, {
+        filter: (p) => {
+          const base = path.basename(p);
+          if (exclude.has(base)) return false;
+          if (base === '__pycache__' || base === 'node_modules' || base === '.git') {
+            return false;
+          }
+          return true;
+        },
+      });
+    } else {
+      await fs.copy(src, dest);
+    }
+  }
+}
+
+/**
+ * @param {string} stagingDir
+ */
+async function removeStagingDir(stagingDir) {
+  let lastErr;
+  for (let attempt = 0; attempt < 6; attempt++) {
+    try {
+      await fs.remove(stagingDir);
+      return;
+    } catch (err) {
+      lastErr = err;
+      await new Promise((r) => setTimeout(r, 50 * (attempt + 1)));
+    }
+  }
+  const message = lastErr instanceof Error ? lastErr.message : String(lastErr);
+  createLogger('artifact').warn(
+    `Could not remove staging dir after zip (artifact is still valid): ${message}`
+  );
+}
+
 async function stageBackendArtifact(cwd, stagingDir, config) {
   const settings = resolveBuildSettings(config);
   const framework = settings.framework;
 
-  await copyDirectoryIfExists(cwd, stagingDir, 'src');
-
-  for (const file of ['Dockerfile', 'docker-compose.yml', '.env.example']) {
-    await copyIfExists(cwd, stagingDir, file);
+  /** @type {Set<string>} */
+  const extraExclude = new Set();
+  // Compiled output is re-added selectively below (jars / publish / bin).
+  if (framework === 'spring' || framework === 'java') extraExclude.add('target');
+  if (framework === 'dotnet') {
+    extraExclude.add('bin');
+    extraExclude.add('obj');
   }
+
+  await copyBackendSourceTree(cwd, stagingDir, extraExclude);
 
   await copyKubernetesManifestsIfPresent(cwd, stagingDir);
 
-  await copyDirectoryIfExists(cwd, stagingDir, 'config');
-  await copyDirectoryIfExists(cwd, stagingDir, 'migrations');
-
-  if (['express', 'nestjs', 'fastify', 'koa', 'nextjs'].includes(framework)) {
-    await copyIfExists(cwd, stagingDir, 'package.json');
-    await copyIfExists(cwd, stagingDir, 'package-lock.json');
-  } else if (['fastapi', 'django', 'flask', 'python'].includes(framework)) {
-    // Source-only packages: root entrypoints + manifests (no dist/).
-    await copyIfExists(cwd, stagingDir, 'requirements.txt');
-    await copyIfExists(cwd, stagingDir, 'pyproject.toml');
-    await copyIfExists(cwd, stagingDir, 'Pipfile');
-    await copyIfExists(cwd, stagingDir, 'Pipfile.lock');
-    await copyIfExists(cwd, stagingDir, 'setup.py');
-    await copyIfExists(cwd, stagingDir, 'manage.py');
-    await copyIfExists(cwd, stagingDir, 'main.py');
-    await copyIfExists(cwd, stagingDir, 'app.py');
-    await copyIfExists(cwd, stagingDir, 'wsgi.py');
-    await copyIfExists(cwd, stagingDir, 'asgi.py');
-    await copyDirectoryIfExists(cwd, stagingDir, 'app');
-    await copyDirectoryIfExists(cwd, stagingDir, 'apps');
-    // Django project package often sits next to manage.py (e.g. config/, mysite/).
-    // `config/` is already copied above for all backends; also copy the detected
-    // package that owns wsgi.py when it is not config/app/apps.
-    if (framework === 'django') {
-      await copyDirectoryIfExists(cwd, stagingDir, 'templates');
-      await copyDirectoryIfExists(cwd, stagingDir, 'static');
-      const wsgiPkg = detectDjangoWsgiPackageDir(cwd);
-      if (
-        wsgiPkg &&
-        !['app', 'apps', 'config', 'templates', 'static', 'src'].includes(wsgiPkg)
-      ) {
-        await copyDirectoryIfExists(cwd, stagingDir, wsgiPkg);
+  if (['laravel', 'symfony', 'php'].includes(framework)) {
+    // storage/logs is written by php-fpm (www-data). Packing live logs is useless
+    // and unpacking them on the next deploy is a common permission-denied unzip.
+    const logsDir = path.join(stagingDir, 'storage', 'logs');
+    if (await fs.pathExists(logsDir)) {
+      const logFiles = await fs.readdir(logsDir);
+      for (const f of logFiles) {
+        if (f === '.gitignore') continue;
+        await fs.remove(path.join(logsDir, f));
       }
     }
-  } else if (['laravel', 'symfony', 'php'].includes(framework)) {
-    await copyIfExists(cwd, stagingDir, 'composer.json');
-    await copyIfExists(cwd, stagingDir, 'composer.lock');
-    await copyIfExists(cwd, stagingDir, 'artisan');
-    await copyDirectoryIfExists(cwd, stagingDir, 'app');
-    await copyDirectoryIfExists(cwd, stagingDir, 'bootstrap');
-    await copyDirectoryIfExists(cwd, stagingDir, 'public');
-    await copyDirectoryIfExists(cwd, stagingDir, 'routes');
-    await copyDirectoryIfExists(cwd, stagingDir, 'database');
-    await copyDirectoryIfExists(cwd, stagingDir, 'resources');
-    await copyDirectoryIfExists(cwd, stagingDir, 'storage');
-    await copyDirectoryIfExists(cwd, stagingDir, 'bin');
-  } else if (framework === 'spring' || framework === 'java') {
-    await copyIfExists(cwd, stagingDir, 'pom.xml');
+  }
+
+  if (framework === 'spring' || framework === 'java') {
     const targetDir = path.join(cwd, 'target');
     if (await fs.pathExists(targetDir)) {
       await fs.ensureDir(path.join(stagingDir, 'target'));
@@ -251,37 +301,20 @@ async function stageBackendArtifact(cwd, stagingDir, config) {
         await fs.copy(path.join(targetDir, jar), path.join(stagingDir, 'target', jar));
       }
     }
-  } else if (framework === 'go') {
-    await copyIfExists(cwd, stagingDir, 'go.mod');
-    await copyIfExists(cwd, stagingDir, 'go.sum');
-    await copyDirectoryIfExists(cwd, stagingDir, 'bin');
   } else if (framework === 'dotnet') {
-    const files = await fs.readdir(cwd);
-    for (const f of files.filter((name) => name.endsWith('.csproj'))) {
-      await copyIfExists(cwd, stagingDir, f);
-    }
     await copyDirectoryIfExists(cwd, stagingDir, settings.buildOutput || 'publish');
-  } else if (framework === 'rails' || framework === 'ruby') {
-    await copyIfExists(cwd, stagingDir, 'Gemfile');
-    await copyIfExists(cwd, stagingDir, 'Gemfile.lock');
-    await copyIfExists(cwd, stagingDir, 'config.ru');
-    await copyIfExists(cwd, stagingDir, 'Rakefile');
-    await copyDirectoryIfExists(cwd, stagingDir, 'app');
-    await copyDirectoryIfExists(cwd, stagingDir, 'bin');
-    await copyDirectoryIfExists(cwd, stagingDir, 'lib');
-    await copyDirectoryIfExists(cwd, stagingDir, 'db');
-    await copyDirectoryIfExists(cwd, stagingDir, 'public');
-  } else {
-    await copyIfExists(cwd, stagingDir, 'package.json');
-    await copyIfExists(cwd, stagingDir, 'requirements.txt');
   }
 
-  // Only copy a named build-output dir when it actually exists (compiled langs).
-  // Skip '.' / 'src' — source is already staged above; never invent an empty dist/.
+  // Named build-output dir (nestjs dist/, etc.) when it exists and was not excluded.
   if (settings.buildOutput && settings.buildOutput !== '.' && settings.buildOutput !== 'src') {
     const built = path.join(cwd, settings.buildOutput);
-    if (await fs.pathExists(built) && !['target', 'bin', 'publish'].includes(settings.buildOutput)) {
-      await fs.copy(built, path.join(stagingDir, settings.buildOutput));
+    const staged = path.join(stagingDir, settings.buildOutput);
+    if (
+      (await fs.pathExists(built)) &&
+      !(await fs.pathExists(staged)) &&
+      !['target', 'bin', 'publish'].includes(settings.buildOutput)
+    ) {
+      await fs.copy(built, staged);
     }
   }
 }
@@ -417,18 +450,13 @@ ${getArtifactReadmeFooter()}`;
   const checksums = await generateChecksums(stagingDir);
   const checksumContent = formatChecksums(checksums);
   await fs.writeFile(path.join(artifactDir, 'checksums.txt'), checksumContent);
-  await fs.writeFile(path.join(stagingDir, 'checksums.txt'), checksumContent);
   await fs.writeJson(
-    path.join(stagingDir, 'deployment.json'),
+    path.join(artifactDir, 'deployment.json'),
     { targets: deployedTargets, deployedAt: timestamp },
     { spaces: 2 }
   );
-  await fs.writeFile(
-    path.join(stagingDir, 'release-notes.md'),
-    await getReleaseNotes(cwd)
-  );
 
-  await fs.remove(stagingDir);
+  await removeStagingDir(stagingDir);
   log.success(`Artifact created at ${artifactDir}`);
 
   return { artifactDir, zipPath };

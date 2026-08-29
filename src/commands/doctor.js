@@ -644,7 +644,6 @@ async function runBackendProcessChecks(config, envName, deployType = 'ssh') {
 
     checks.push(
       await runCheck('pip', async () => {
-        // Deploy runs `pip install -r requirements.txt`; accept pip3 or pip.
         const result = await provider.runRemoteCheck(
           'command -v pip3 >/dev/null 2>&1 || command -v pip >/dev/null 2>&1'
         );
@@ -661,24 +660,11 @@ async function runBackendProcessChecks(config, envName, deployType = 'ssh') {
       })
     );
 
-    checks.push(
-      await runCheck('gunicorn', async () => {
-        const result = await provider.runRemoteCheck('which gunicorn || gunicorn --version');
-        if (result.pass) {
-          return { name: 'gunicorn', pass: true, message: 'gunicorn available' };
-        }
-        return {
-          name: 'gunicorn',
-          pass: false,
-          message: 'not found — run: pip install gunicorn',
-        };
-      })
-    );
-
+    // FastAPI SSH starts uvicorn, not gunicorn. Requiring gunicorn here is a false failure.
     if (framework === 'fastapi') {
       checks.push(
         await runCheck('uvicorn', async () => {
-          const result = await provider.runRemoteCheck('which uvicorn || uvicorn --version');
+          const result = await provider.runRemoteCheck('command -v uvicorn >/dev/null 2>&1 || uvicorn --version');
           if (result.pass) {
             return { name: 'uvicorn', pass: true, message: 'uvicorn available' };
           }
@@ -686,6 +672,20 @@ async function runBackendProcessChecks(config, envName, deployType = 'ssh') {
             name: 'uvicorn',
             pass: false,
             message: 'not found — run: pip install uvicorn',
+          };
+        })
+      );
+    } else {
+      checks.push(
+        await runCheck('gunicorn', async () => {
+          const result = await provider.runRemoteCheck('command -v gunicorn >/dev/null 2>&1 || gunicorn --version');
+          if (result.pass) {
+            return { name: 'gunicorn', pass: true, message: 'gunicorn available' };
+          }
+          return {
+            name: 'gunicorn',
+            pass: false,
+            message: 'not found — run: pip install gunicorn',
           };
         })
       );
@@ -767,7 +767,7 @@ async function runBackendProcessChecks(config, envName, deployType = 'ssh') {
         }
 
         const active = await provider.runRemoteCheck(
-          `systemctl is-active ${pick.unit}`
+          `sudo -n systemctl is-active ${pick.unit}`
         );
         if (active.pass && String(active.message).includes('active')) {
           const note =
@@ -793,11 +793,28 @@ async function runBackendProcessChecks(config, envName, deployType = 'ssh') {
 
     checks.push(
       await runCheck('nginx', async () => {
-        const result = await provider.runRemoteCheck('systemctl is-active nginx');
+        const installed = await provider.runRemoteCheck(
+          'command -v nginx >/dev/null 2>&1 && echo yes'
+        );
+        if (!installed.pass || !String(installed.message).includes('yes')) {
+          return {
+            name: 'nginx',
+            pass: false,
+            message:
+              'nginx not found on PATH — install it (Amazon Linux: sudo dnf install -y nginx; Ubuntu: sudo apt install nginx), then: sudo systemctl enable --now nginx',
+          };
+        }
+        const result = await provider.runRemoteCheck('sudo -n systemctl is-active nginx');
         if (result.pass && result.message.includes('active')) {
           return { name: 'nginx', pass: true, message: 'nginx running' };
         }
-        return { name: 'nginx', pass: false, message: 'nginx not running' };
+        return {
+          name: 'nginx',
+          pass: false,
+          message:
+            `nginx is installed but not active (systemctl is-active: ${result.message}). ` +
+            'Start it with: sudo systemctl enable --now nginx',
+        };
       })
     );
   }
@@ -819,6 +836,53 @@ async function runBackendProcessChecks(config, envName, deployType = 'ssh') {
           };
         }
         return { name: 'Java', pass: false, message: 'Java not found on server' };
+      })
+    );
+  }
+
+  if (framework === 'dotnet') {
+    checks.push(
+      await runCheck('.NET runtime', async () => {
+        const result = await provider.runRemoteCheck('dotnet --version');
+        if (result.pass) {
+          return { name: '.NET runtime', pass: true, message: `dotnet ${result.message.split('\n')[0] || 'found'}` };
+        }
+        return {
+          name: '.NET runtime',
+          pass: false,
+          message:
+            'dotnet not found on PATH — install the ASP.NET Core runtime on the server ' +
+            '(SSH deploy runs `dotnet <dll>` after extract)',
+        };
+      })
+    );
+  }
+
+  if (framework === 'rails' || framework === 'ruby') {
+    checks.push(
+      await runCheck('Ruby', async () => {
+        const result = await provider.runRemoteCheck('command -v ruby >/dev/null 2>&1 && ruby -v');
+        if (result.pass) {
+          return { name: 'Ruby', pass: true, message: result.message.split('\n')[0] || 'ruby found' };
+        }
+        return {
+          name: 'Ruby',
+          pass: false,
+          message: 'ruby not found on PATH — install Ruby 3.2+ on the server (SSH deploy runs bundle install)',
+        };
+      })
+    );
+    checks.push(
+      await runCheck('Bundler', async () => {
+        const result = await provider.runRemoteCheck('command -v bundle');
+        if (result.pass) {
+          return { name: 'Bundler', pass: true, message: 'bundle found on PATH' };
+        }
+        return {
+          name: 'Bundler',
+          pass: false,
+          message: 'bundle not found on PATH — run: gem install bundler',
+        };
       })
     );
   }

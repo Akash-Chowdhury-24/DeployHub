@@ -20,8 +20,10 @@ export function preferredPhpFpmUnitName(phpVersion) {
  * @returns {string}
  */
 export function buildPhpFpmUnitListCommand() {
+  // sudo -n: unprivileged SSH users cannot talk to systemd's private bus
+  // (Failed to connect to bus) inside containers and some hardened hosts.
   return (
-    `systemctl list-unit-files --type=service --no-legend ` +
+    `sudo -n systemctl list-unit-files --type=service --no-legend ` +
     `'php*-fpm.service' 'php-fpm.service' 2>/dev/null ` +
     `| awk '{print $1}' | sed 's/\\.service$//' | sort -u`
   );

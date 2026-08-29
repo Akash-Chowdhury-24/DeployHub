@@ -179,13 +179,28 @@ describe('dockerfile generation', () => {
     expect(dockerfile).not.toContain('FROM node:');
   });
 
+  test('Next.js frontend Dockerfile exposes 3000 not nginx 80', () => {
+    const dockerfile = generateDockerfile({
+      projectType: 'frontend',
+      framework: 'nextjs',
+      buildCommand: 'npm run build',
+    });
+    expect(dockerfile).toContain('EXPOSE 3000');
+    expect(dockerfile).toContain('.next');
+    expect(dockerfile).toContain('RUN mkdir -p public');
+    expect(dockerfile).not.toContain('EXPOSE 80');
+    expect(dockerfile).not.toContain('FROM nginx:alpine');
+  });
+
   test('Go Dockerfile tolerates missing go.sum and runs compiled binary', () => {
     const dockerfile = generateDockerfile({
       projectType: 'backend',
       framework: 'go',
       port: 8080,
     });
-    expect(dockerfile).toContain('COPY go.mod go.sum*');
+    expect(dockerfile).toContain('COPY go.mod ./');
+    expect(dockerfile).toContain('RUN go mod download');
+    expect(dockerfile).not.toContain('go.sum*');
     expect(dockerfile).toContain('CMD ["./app"]');
   });
 

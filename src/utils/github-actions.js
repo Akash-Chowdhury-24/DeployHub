@@ -863,12 +863,10 @@ ${rollbackRun}
  * @param {import('../core/config.js').DeployHubConfig} [config]
  * @returns {string}
  */
-function getInstallDepsCommand(config) {
-  if (!config) return 'npm install';
-
+function getBackendInstallDepsCommand(config) {
   const framework =
-    config.backend?.framework || config.framework || 'express';
-  const language = config.backend?.language || config.language;
+    config?.backend?.framework || config?.framework || 'express';
+  const language = config?.backend?.language || config?.language;
 
   if (language === 'python' || ['fastapi', 'django', 'flask', 'python'].includes(framework)) {
     return 'pip install -r requirements.txt';
@@ -889,6 +887,25 @@ function getInstallDepsCommand(config) {
     return 'bundle install';
   }
   return 'npm install';
+}
+
+/**
+ * @param {import('../core/config.js').DeployHubConfig} [config]
+ * @returns {string}
+ */
+function getInstallDepsCommand(config) {
+  if (!config) return 'npm install';
+
+  const projectType = config.projectType || 'frontend';
+  if (projectType === 'frontend') return 'npm install';
+
+  const backendCmd = getBackendInstallDepsCommand(config);
+  // Fullstack: frontend is always Node in this CLI. Backend install alone
+  // (composer/pip/…) leaves the SPA without node_modules and `npm run build` dies.
+  if (projectType === 'both' && backendCmd !== 'npm install') {
+    return `npm install && ${backendCmd}`;
+  }
+  return backendCmd;
 }
 
 /**

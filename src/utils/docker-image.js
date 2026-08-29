@@ -174,7 +174,7 @@ WORKDIR /app
 COPY ${dir}/ .
 EXPOSE ${port}
 ENV ASPNETCORE_URLS=http://+:${port}
-CMD ["dotnet", "App.dll"]
+CMD ["sh", "-c", "dll=$(ls *.dll 2>/dev/null | head -n1); exec dotnet \\"$dll\\""]
 `;
 }
 
@@ -191,7 +191,7 @@ export function isFrontendStaticFramework(framework) {
  * @param {string} framework
  */
 export function isNodeBackendFramework(framework) {
-  return ['express', 'nestjs', 'fastify', 'koa', 'nextjs'].includes(framework || '');
+  return ['express', 'nestjs', 'fastify', 'koa', 'nextjs', 'node'].includes(framework || '');
 }
 
 /**
@@ -201,7 +201,7 @@ export function isNodeBackendFramework(framework) {
  */
 export function isInterpretedBackendFramework(framework) {
   return [
-    ...['express', 'nestjs', 'fastify', 'koa', 'nextjs'],
+    ...['express', 'nestjs', 'fastify', 'koa', 'nextjs', 'node'],
     'fastapi',
     'django',
     'flask',

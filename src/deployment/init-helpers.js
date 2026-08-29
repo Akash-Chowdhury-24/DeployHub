@@ -143,7 +143,9 @@ export async function validateSshKeyForDoctor(keyPath, sshKey) {
   }
 
   const mode = stat.mode & 0o777;
-  if (mode !== 0o400 && mode !== 0o600) {
+  // Windows NTFS does not carry Unix 400/600; OpenSSH uses ACLs instead.
+  // A 666 stat here is not "world-readable" the way it is on Linux.
+  if (process.platform !== 'win32' && mode !== 0o400 && mode !== 0o600) {
     return {
       ok: false,
       message: `SSH key permissions are ${mode.toString(8)} (should be 400 or 600) — run: chmod 600 ${resolved}`,

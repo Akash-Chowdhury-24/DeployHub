@@ -441,8 +441,13 @@ export function createSshProvider(config, envName, env = process.env) {
 
     if (framework === 'dotnet') {
       await stopScopedBackendProcess(ssh, targetPath);
-      const dll = startCommand?.replace('dotnet ', '') || 'App.dll';
-      await startScopedNohup(ssh, targetPath, `dotnet ${dll}`);
+      // Discover the published DLL at runtime — csproj name is not always App.dll
+      // (same class of bug as the Docker CMD ["dotnet","App.dll"] hardcode).
+      await startScopedNohup(
+        ssh,
+        targetPath,
+        `sh -c 'dll=$(ls -1 *.dll 2>/dev/null | head -n1); test -n "$dll" || { echo "No .dll found in $(pwd) for .NET start" >&2; exit 1; }; exec dotnet "$dll"'`
+      );
       return;
     }
 
@@ -577,12 +582,34 @@ export function createSshProvider(config, envName, env = process.env) {
   }
 
   /**
+   * Make an existing remote directory writable by the SSH user so the next
+   * unzip/rsync is not blocked by www-data ownership from php-fpm or nginx.
+   * @param {import('node-ssh').NodeSSH} ssh
+   * @param {string} targetPath
+   */
+  async function ensureWritableDeployDir(ssh, targetPath) {
+    const targetQ = sh(targetPath);
+    const userQ = sh(user);
+    await exec(ssh, `mkdir -p ${targetQ}`);
+    await exec(
+      ssh,
+      `if [ -d ${targetQ} ]; then ` +
+        `chmod -R u+w ${targetQ} 2>/dev/null || true; ` +
+        `if [ ! -w ${targetQ} ]; then ` +
+          `sudo chown -R ${userQ}:${userQ} ${targetQ} 2>/dev/null || true; ` +
+          `chmod -R u+w ${targetQ} 2>/dev/null || true; ` +
+        `fi; ` +
+      `fi`
+    );
+  }
+
+  /**
    * @param {import('node-ssh').NodeSSH} ssh
    * @param {string} remoteZip
    * @param {string} targetPath
    */
   async function extractToPath(ssh, remoteZip, targetPath) {
-    await exec(ssh, `mkdir -p ${sh(targetPath)}`);
+    await ensureWritableDeployDir(ssh, targetPath);
     await exec(ssh, `unzip -o ${sh(remoteZip)} -d ${sh(targetPath)}`);
   }
 
@@ -606,13 +633,13 @@ export function createSshProvider(config, envName, env = process.env) {
         await exec(ssh, `mkdir -p ${sh(remoteStaging)}`);
         await exec(ssh, `unzip -o ${sh(remoteZip)} -d ${sh(remoteStaging)}`);
 
-        await exec(ssh, `mkdir -p ${sh(frontendDeployPath)}`);
+        await ensureWritableDeployDir(ssh, frontendDeployPath);
         await exec(
           ssh,
           `rsync -a ${sh(remoteStaging)}/ ${sh(frontendDeployPath)}/ --exclude backend || cp -r ${sh(remoteStaging)}/* ${sh(frontendDeployPath)}/`
         );
 
-        await exec(ssh, `mkdir -p ${sh(backendDeployPath)}`);
+        await ensureWritableDeployDir(ssh, backendDeployPath);
         await exec(
           ssh,
           `rsync -a ${sh(remoteStaging)}/backend/ ${sh(backendDeployPath)}/ || cp -r ${sh(remoteStaging)}/backend/* ${sh(backendDeployPath)}/`

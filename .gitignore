@@ -20,6 +20,11 @@ deployhub.config.json
 .deployhub-restore/
 .deployhub-doctor-test
 
+# Local verification / closeout harnesses (not product).
+# _closeout includes SSH private keys, Laravel .env/APP_KEY, vendor, artifacts.
+_closeout/
+_verify-sweep/
+
 # Test coverage
 coverage/
 
@@ -45,3 +50,5 @@ Desktop.ini
 .pkg-cache/
 
 LEARN.txt
+
+*.md

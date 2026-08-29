@@ -76,6 +76,8 @@ function defaultBuildOutput(framework, projectType) {
  * @param {string} projectType
  */
 function defaultPort(framework, projectType) {
+  // Next.js is a Node server, not nginx static — even when projectType is frontend.
+  if (framework === 'nextjs') return 3000;
   if (
     projectType === 'frontend' ||
     ['react', 'vue', 'angular', 'svelte', 'astro', 'vanilla'].includes(framework)
@@ -244,8 +246,20 @@ export function generateDockerfile(config) {
  * @param {{ buildCommand: string|null, buildOutput: string, port: number }} settings
  */
 function generateFrontendStaticDockerfile(settings) {
-  const buildCmd = settings.buildCommand || 'npm run build';
+  const buildCmd = settings.buildCommand;
   const output = settings.buildOutput || 'dist';
+
+  // Vanilla / prebuilt static trees have no compile step. Do not invent
+  // `npm run build` — that fails when package.json has no build script.
+  if (!buildCmd || String(buildCmd).trim() === '') {
+    const src = output === '.' ? '.' : output;
+    return `${GENERATED_HEADER}
+FROM nginx:alpine
+COPY ${src} /usr/share/nginx/html
+EXPOSE 80
+CMD ["nginx", "-g", "daemon off;"]
+`;
+  }
 
   return `${GENERATED_HEADER}
 FROM node:20-alpine AS build
@@ -281,6 +295,7 @@ FROM node:20-alpine AS build
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
+RUN mkdir -p public
 RUN ${buildCmd}
 
 FROM node:20-alpine AS runner
@@ -453,9 +468,8 @@ function generatePythonDockerfile(settings) {
   return `${GENERATED_HEADER}
 FROM python:3.11-slim
 WORKDIR /app
-COPY requirements.txt* ./
-RUN if [ -f requirements.txt ]; then pip install --no-cache-dir -r requirements.txt; fi
 COPY . .
+RUN if [ -f requirements.txt ]; then pip install --no-cache-dir -r requirements.txt; fi
 EXPOSE ${port}
 CMD ${JSON.stringify(startParts)}
 `;
@@ -485,7 +499,7 @@ function generateLaravelDockerfile(settings) {
   return `${GENERATED_HEADER}
 FROM composer:2 AS vendor
 WORKDIR /app
-COPY composer.json composer.lock* ./
+COPY composer.json ./
 RUN composer install --no-dev --optimize-autoloader --no-interaction --ignore-platform-reqs --no-scripts
 
 FROM php:${phpVersion}-cli-alpine
@@ -519,7 +533,7 @@ function generateSymfonyDockerfile(settings) {
   return `${GENERATED_HEADER}
 FROM composer:2 AS vendor
 WORKDIR /app
-COPY composer.json composer.lock* ./
+COPY composer.json ./
 RUN composer install --no-dev --optimize-autoloader --no-interaction --ignore-platform-reqs --no-scripts
 
 FROM php:${phpVersion}-cli-alpine
@@ -600,7 +614,7 @@ function generateGoDockerfile(settings) {
   return `${GENERATED_HEADER}
 FROM golang:1.22-alpine AS build
 WORKDIR /app
-COPY go.mod go.sum* ./
+COPY go.mod ./
 RUN go mod download
 COPY . .
 RUN mkdir -p /app/bin && ${buildCmd}
@@ -622,6 +636,11 @@ function generateDotnetDockerfile(settings) {
   const buildCmd = settings.buildCommand || 'dotnet publish -c Release -o publish';
   const port = settings.port || 5000;
   const output = settings.buildOutput || 'publish';
+  const startParts = [
+    'sh',
+    '-c',
+    'dll=$(ls *.dll 2>/dev/null | head -n1); exec dotnet "$dll"',
+  ];
 
   return `${GENERATED_HEADER}
 FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
@@ -636,7 +655,7 @@ WORKDIR /app
 COPY --from=build /src/${output} .
 EXPOSE ${port}
 ENV ASPNETCORE_URLS=http://+:${port}
-CMD ["dotnet", "App.dll"]
+CMD ${JSON.stringify(startParts)}
 `;
 }
 
@@ -654,7 +673,7 @@ function generateRailsDockerfile(settings) {
 FROM ruby:3.2-slim AS build
 WORKDIR /app
 RUN apt-get update -qq && apt-get install -y build-essential libpq-dev && rm -rf /var/lib/apt/lists/*
-COPY Gemfile Gemfile.lock* ./
+COPY Gemfile ./
 RUN bundle config set --local without 'development test' && bundle install
 COPY . .
 RUN bundle exec rake assets:precompile || true
@@ -683,7 +702,7 @@ function generateRubyDockerfile(settings) {
 FROM ruby:3.2-slim
 WORKDIR /app
 RUN apt-get update -qq && apt-get install -y build-essential && rm -rf /var/lib/apt/lists/*
-COPY Gemfile Gemfile.lock* ./
+COPY Gemfile ./
 RUN bundle config set --local without 'development test' && bundle install
 COPY . .
 EXPOSE ${port}

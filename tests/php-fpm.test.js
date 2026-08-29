@@ -6,6 +6,7 @@ import {
   formatPhpFpmMissingError,
   formatPhpFpmVersionMismatchError,
   resolvePreferredPhpFpmUnit,
+  buildPhpFpmUnitListCommand,
 } from '../src/utils/php-fpm.js';
 
 describe('php-fpm unit helpers', () => {
@@ -52,6 +53,12 @@ describe('php-fpm unit helpers', () => {
     expect(parsePhpMajorMinor('PHP 8.4.1 (cli) (built: ...)')).toBe('8.4');
     expect(parsePhpMajorMinor('PHP 8.2.33 (cli)')).toBe('8.2');
     expect(parsePhpMajorMinor('nope')).toBeNull();
+  });
+
+  test('buildPhpFpmUnitListCommand uses passwordless sudo so unprivileged SSH users can query systemd', () => {
+    const cmd = buildPhpFpmUnitListCommand();
+    expect(cmd).toMatch(/sudo -n systemctl list-unit-files/);
+    expect(cmd).toMatch(/php-fpm\.service/);
   });
 
   test('error formatters mention expected unit and found units', () => {

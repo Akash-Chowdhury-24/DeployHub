@@ -192,7 +192,8 @@ describe('backend language process isolation (multi-env same host)', () => {
 
   test('.NET: scoped PID + DEPLOYHUB_APP, no pkill -f "dotnet"', async () => {
     await deployBothEnvs('dotnet', (joined, envName) => {
-      expect(joined).toMatch(/dotnet App\.dll/);
+      expect(joined).toMatch(/ls -1 \*\.dll/);
+      expect(joined).toMatch(/exec dotnet/);
       expect(joined).toMatch(/\.deployhub\.pid/);
       expect(joined).toMatch(
         envName === 'development'
