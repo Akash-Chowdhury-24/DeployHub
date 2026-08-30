@@ -19,7 +19,7 @@ import {
   formatRemoteDockerPermissionDenied,
   formatRemoteDockerDaemonOk,
 } from '../src/utils/docker-remote.js';
-import { formatDockerPortNotPublished } from '../src/utils/docker-port-publish.js';
+import { formatDockerPortNotPublished, runDockerPortPublishChecksForEnvs } from '../src/utils/docker-port-publish.js';
 
 const CONTAINER = 'deployhub-test-docker-ssh';
 const IMAGE = 'deployhub-test-docker-ssh:ubuntu';
@@ -492,6 +492,73 @@ describeReal('remote Docker via SSH (real Ubuntu sshd + dockerd)', () => {
     expect(failVerify.ok).toBe(false);
     expect(failVerify.message).toBe(formatDockerPortNotPublished('dh-nginx-port', 80));
     console.log('--- verify after unpublished -p removed ---\n', failVerify.message);
+  });
+
+  test('SSH rollback (registry pull, skipImageReuse) publishes 0.0.0.0:80->; verify/doctor match deploy', async () => {
+    const config = nginxSshConfig();
+    const env = {
+      SSH_KEY_PATH: keyPath,
+      SSH_SSH_PORT: String(SSH_PORT),
+      SSH_HOST: '127.0.0.1',
+      SSH_USER: 'ubuntu',
+      DOCKER_IMAGE_NAME: 'nginx',
+      DOCKER_IMAGE_TAG: 'should-not-win',
+    };
+    process.env.DOCKER_IMAGE_NAME = 'nginx';
+    process.env.DOCKER_IMAGE_TAG = 'should-not-win';
+    process.env.SSH_HOST = '127.0.0.1';
+    process.env.SSH_USER = 'ubuntu';
+    process.env.SSH_KEY_PATH = keyPath;
+    process.env.SSH_SSH_PORT = String(SSH_PORT);
+
+    // Fresh-CI: no local cache of the restored tag — rollback must docker pull.
+    await execa('docker', ['rmi', '-f', 'nginx:alpine'], { reject: false });
+
+    const provider = createDockerProvider(config, 'production', env);
+    await provider.rollback(tmp, { buildId: 'alpine' });
+
+    const session = createSshExecSession({
+      host: '127.0.0.1',
+      user: 'ubuntu',
+      keyPath,
+      sshPort: SSH_PORT,
+    });
+    const ssh = await session.connect();
+    try {
+      const inspected = await session.exec(
+        ssh,
+        "docker inspect --format '{{range $p, $conf := .NetworkSettings.Ports}}{{range $conf}}{{.HostIp}}:{{.HostPort}}->{{end}}{{end}}' dh-nginx-port"
+      );
+      console.log('--- docker inspect after SSH rollback ---\n', inspected.stdout);
+      expect(inspected.stdout).toContain('0.0.0.0:80->');
+    } finally {
+      ssh.dispose();
+    }
+
+    const portOutcome = await runDockerPortPublishChecksForEnvs(config, ['production'], {
+      requireRunning: true,
+      env: { ...process.env, ...env },
+    });
+    expect(portOutcome.failures).toEqual([]);
+    expect(portOutcome.results[0]?.message).toBe(
+      "Container 'dh-nginx-port' publishes 0.0.0.0:80->"
+    );
+    console.log('--- runDockerPortPublishChecksForEnvs after rollback ---\n', portOutcome.results[0]?.message);
+
+    const doctorChecks = await runDeploymentChecks(
+      config,
+      'production',
+      config.environments.production
+    );
+    const doctorPort = doctorChecks.find((c) => c.name === 'Docker port published');
+    expect(doctorPort?.pass).toBe(true);
+    expect(doctorPort?.message).toBe("Container 'dh-nginx-port' publishes 0.0.0.0:80->");
+    console.log('--- doctor after SSH rollback ---\n', doctorPort?.message);
+
+    const verify = await runVerify(config, 'production');
+    expect(verify.ok).toBe(true);
+    expect(verify.message).toMatch(/publishes 0\.0\.0\.0:80->/);
+    console.log('--- verify after SSH rollback ---\n', verify.message);
   });
 
   test('raw/local mode still talks to the host Docker daemon (regression)', async () => {

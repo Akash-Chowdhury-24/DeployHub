@@ -16,6 +16,57 @@ import {
 } from './docker-image.js';
 
 /**
+ * Classify `docker pull` failure for rollback logs / interpreted-backend errors.
+ * @param {unknown} err
+ * @returns {'not found'|'auth failed'|'network error'|string}
+ */
+export function classifyDockerPullFailure(err) {
+  const execErr = /** @type {{ message?: string, stderr?: string, stdout?: string }} */ (err);
+  const combined = `${execErr?.message || ''} ${execErr?.stderr || ''} ${execErr?.stdout || ''}`.toLowerCase();
+  // Docker Hub reports missing repos as "denied" — check existence first.
+  if (
+    combined.includes('manifest unknown') ||
+    combined.includes('not found') ||
+    combined.includes('repository does not exist') ||
+    combined.includes('no such image')
+  ) {
+    return 'not found';
+  }
+  if (
+    combined.includes('unauthorized') ||
+    combined.includes('authentication required') ||
+    combined.includes('access denied') ||
+    combined.includes('denied: requested access')
+  ) {
+    return 'auth failed';
+  }
+  if (
+    combined.includes('network') ||
+    combined.includes('timeout') ||
+    combined.includes('timed out') ||
+    combined.includes('econnrefused') ||
+    combined.includes('connection refused') ||
+    combined.includes('no such host') ||
+    combined.includes('dial tcp')
+  ) {
+    return 'network error';
+  }
+  const stderr = String(execErr?.stderr || '').trim().split('\n').filter(Boolean).pop();
+  return stderr || (err instanceof Error ? err.message : 'pull failed');
+}
+
+/**
+ * @param {string} imageRef
+ * @param {string} reason
+ */
+export function formatImageNotLocalAndPullFailed(imageRef, reason) {
+  return (
+    `Target image ${imageRef} not found locally and could not be pulled ` +
+    `from the registry (${reason}).`
+  );
+}
+
+/**
  * Shared Docker image build, reuse, push, and pullability logic used by
  * docker and kubernetes deploy providers.
  *
@@ -106,6 +157,41 @@ export function createDockerImageDeployContext(config, env = process.env, log) {
   }
 
   /**
+   * Rollback (and any skipImageReuse path): after a local-cache miss, pull the
+   * exact tag from the registry before falling through to artifact rebuild.
+   * @param {string} ref
+   * @returns {Promise<{ ok: true, output: string }|{ ok: false, reason: string, output: string }>}
+   */
+  async function tryPullImage(ref) {
+    log.info(`Pulling ${ref} from registry...`);
+    try {
+      const pulled = await execa('docker', ['pull', ref], {
+        stdio: 'pipe',
+        env: getDockerEnv(),
+      });
+      const output = [pulled.stdout, pulled.stderr].filter(Boolean).join('\n').trim();
+      if (output) log.info(output);
+      if (await imageExistsLocally(ref)) {
+        log.success(`Pulled ${ref}`);
+        return { ok: true, output };
+      }
+      return {
+        ok: false,
+        reason: 'pull reported success but image is still missing locally',
+        output,
+      };
+    } catch (err) {
+      const execErr = /** @type {{ stdout?: string, stderr?: string }} */ (err);
+      const output = [execErr.stdout, execErr.stderr]
+        .filter(Boolean)
+        .join('\n')
+        .trim();
+      if (output) log.info(output);
+      return { ok: false, reason: classifyDockerPullFailure(err), output };
+    }
+  }
+
+  /**
    * Prefer the image already built during the pipeline `docker` stage.
    * Retag when the pipeline used `:latest` and deploy needs a version tag.
    * @param {string} [imageRef]
@@ -138,8 +224,15 @@ export function createDockerImageDeployContext(config, env = process.env, log) {
    * @param {Record<string, unknown>} metadata
    * @param {string} framework
    * @param {number} port
+   * @param {string} [imageRef]
    */
-  async function prepareBackendBuildContext(buildContext, metadata, framework, port) {
+  async function prepareBackendBuildContext(
+    buildContext,
+    metadata,
+    framework,
+    port,
+    imageRef = fullImage
+  ) {
     if (framework === 'spring') {
       const targetDir = path.join(buildContext, 'target');
       if (await fs.pathExists(targetDir)) {
@@ -199,7 +292,7 @@ export function createDockerImageDeployContext(config, env = process.env, log) {
     if (isInterpretedBackendFramework(framework)) {
       const gap = describeInterpretedBackendGap(framework);
       throw new Error(
-        `Cannot rebuild ${gap.ecosystem} backend image "${fullImage}" from the packaged artifact.\n` +
+        `Cannot rebuild ${gap.ecosystem} backend image "${imageRef}" from the packaged artifact.\n` +
           `Backend artifacts include source/manifests but not ${gap.missing}, ` +
           `so Dockerfiles that run \`${gap.installCmd}\` cannot reliably succeed from the artifact alone.\n\n` +
           'What to do instead:\n' +
@@ -286,7 +379,13 @@ export function createDockerImageDeployContext(config, env = process.env, log) {
           generateFrontendRuntimeDockerfile(buildOutput)
         );
       } else {
-        await prepareBackendBuildContext(buildContext, metadata, framework, port);
+        await prepareBackendBuildContext(
+          buildContext,
+          metadata,
+          framework,
+          port,
+          imageRef
+        );
       }
 
       await execa('docker', ['build', '-t', imageRef, '.'], {
@@ -322,6 +421,8 @@ export function createDockerImageDeployContext(config, env = process.env, log) {
     await dockerLogin();
 
     let reused = false;
+    /** @type {string|null} */
+    let registryPullFailure = null;
     if (!options.skipImageReuse) {
       // Normal deploy: prefer pipeline image (exact tag, then :latest retag).
       reused = await ensureImageFromPipeline(imageRef);
@@ -331,16 +432,32 @@ export function createDockerImageDeployContext(config, env = process.env, log) {
       log.info(`Using restored image ${imageRef} (skipImageReuse — no :latest retag)`);
       reused = true;
     } else {
-      log.info(
-        `Target image ${imageRef} not found locally — attempting rebuild from artifact`
-      );
+      const pulled = await tryPullImage(imageRef);
+      if (pulled.ok) {
+        reused = true;
+      } else {
+        registryPullFailure = pulled.reason;
+        log.info(
+          `${formatImageNotLocalAndPullFailed(imageRef, pulled.reason)} — attempting rebuild from artifact`
+        );
+      }
     }
 
     let ranCompose = false;
 
     if (!reused) {
-      const result = await buildFromArtifactContents(artifactDir, imageRef);
-      ranCompose = Boolean(result?.ranCompose);
+      try {
+        const result = await buildFromArtifactContents(artifactDir, imageRef);
+        ranCompose = Boolean(result?.ranCompose);
+      } catch (err) {
+        if (registryPullFailure) {
+          const detail = err instanceof Error ? err.message : String(err);
+          throw new Error(
+            `${formatImageNotLocalAndPullFailed(imageRef, registryPullFailure)}\n${detail}`
+          );
+        }
+        throw err;
+      }
     }
 
     if (ranCompose) {
@@ -372,6 +489,7 @@ export function createDockerImageDeployContext(config, env = process.env, log) {
     dockerLogin,
     maybePushImage,
     ensureImageFromPipeline,
+    tryPullImage,
     buildFromArtifactContents,
     ensureImageReadyForDeploy,
   };

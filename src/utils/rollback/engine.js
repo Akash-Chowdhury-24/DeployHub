@@ -11,6 +11,9 @@ import {
   getEnvMethod,
   resolveDefaultEnvironmentName,
 } from '../../core/environments.js';
+import {
+  runDockerPortPublishChecksForEnvs,
+} from '../docker-port-publish.js';
 import fs from 'fs-extra';
 import path from 'path';
 
@@ -32,6 +35,19 @@ async function rollbackTarget(config, artifactDir, envName, meta) {
 
   const provider = getDeploymentProvider(method, config, envName);
   await provider.rollback(artifactDir, meta);
+
+  // Same post-deploy port-publish check as the deploy pipeline verify stage
+  // (`runDockerPortPublishChecksForEnvs`). SSH/EC2/VM skip; docker envs fail
+  // if the restored container is up without 0.0.0.0:<port>->.
+  const portOutcome = await runDockerPortPublishChecksForEnvs(config, [envName], {
+    requireRunning: true,
+  });
+  if (portOutcome.failures.length > 0) {
+    throw new Error(portOutcome.failures[0].error);
+  }
+  for (const r of portOutcome.results) {
+    log.success(r.message);
+  }
 }
 
 /**

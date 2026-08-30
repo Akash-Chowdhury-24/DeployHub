@@ -354,4 +354,18 @@ describe('kubernetes provider rollback (artifact-based)', () => {
     expect(testApply?.[1]).toEqual(expect.arrayContaining(['--namespace', 'staging-ns']));
     expect(testApply?.[1]).not.toEqual(expect.arrayContaining(['--namespace', 'prod-ns']));
   });
+
+  test('rollback uses shared createDockerImageDeployContext.ensureImageReadyForDeploy (no local copy)', async () => {
+    const { readFileSync } = await import('node:fs');
+    const pathMod = await import('node:path');
+    const src = readFileSync(
+      pathMod.join(process.cwd(), 'src/deployment/providers/kubernetes.js'),
+      'utf8'
+    );
+    expect(src).toContain("from '../../utils/docker-image-deploy.js'");
+    expect(src).toContain('createDockerImageDeployContext');
+    expect(src).toMatch(/skipImageReuse:\s*true/);
+    expect(src).not.toMatch(/function ensureImageReadyForDeploy/);
+    expect(src).not.toMatch(/docker pull/);
+  });
 });
