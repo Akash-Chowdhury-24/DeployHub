@@ -58,13 +58,15 @@ export function backendProcessNamePromptMessage(framework, projectName, projectT
  * @param {'frontend'|'backend'|'both'} projectType
  * @param {Record<string, unknown>|null} backendConfig
  * @param {{
- *   envName?: string,
- *   existingEnvNames?: string[],
- *   deployType?: string,
- *   nonInteractive?: boolean,
- * }} [options]
- *   — when envName is set, skip the name prompt; existingEnvNames blocks in-session / config duplicates
- *   — deployType skips the method list; nonInteractive uses defaults (requires deployType)
+   *   envName?: string,
+   *   existingEnvNames?: string[],
+   *   deployType?: string,
+   *   nonInteractive?: boolean,
+   *   portDefault?: number,
+   * }} [options]
+   *   — when envName is set, skip the name prompt; existingEnvNames blocks in-session / config duplicates
+   *   — deployType skips the method list; nonInteractive uses defaults (requires deployType)
+   *   — portDefault seeds the docker "Default port" prompt (init / env add)
  */
 export async function promptServerDeployment(
   projectName,
@@ -133,7 +135,10 @@ export async function promptServerDeployment(
   }
 
   if (deployType === 'docker') {
-    return promptDockerDeployment(base, projectName, projectType);
+    return promptDockerDeployment(base, projectName, projectType, {
+      backendConfig,
+      portDefault: options.portDefault,
+    });
   }
 
   return promptSshBasedDeployment(base, projectName, projectType, backendConfig, deployType);
@@ -306,8 +311,12 @@ async function promptKubernetesDeployment(base, projectName, projectType, option
  * @param {Record<string, string>} base
  * @param {string} projectName
  * @param {'frontend'|'backend'|'both'} projectType
+ * @param {{
+ *   backendConfig?: Record<string, unknown>|null,
+ *   portDefault?: number,
+ * }} [options]
  */
-async function promptDockerDeployment(base, projectName, projectType) {
+async function promptDockerDeployment(base, projectName, projectType, options = {}) {
   const imageAnswers = await inquirer.prompt([
     {
       type: 'input',
@@ -404,7 +413,25 @@ async function promptDockerDeployment(base, projectName, projectType) {
     ]);
   }
 
-  const { healthUrl } = await inquirer.prompt([
+  const portDefaultRaw = options.portDefault ?? options.backendConfig?.port;
+  const portDefault = Number.isInteger(Number(portDefaultRaw))
+    ? Number(portDefaultRaw)
+    : 3000;
+
+  const { port, healthUrl } = await inquirer.prompt([
+    {
+      type: 'number',
+      name: 'port',
+      message: 'Default port:',
+      default: portDefault,
+      validate: (value) => {
+        const n = Number(value);
+        if (!Number.isInteger(n) || n < 1 || n > 65535) {
+          return 'Enter a port number between 1 and 65535.';
+        }
+        return true;
+      },
+    },
     {
       type: 'input',
       name: 'healthUrl',
@@ -418,6 +445,7 @@ async function promptDockerDeployment(base, projectName, projectType) {
     remoteMode,
     ...sshAnswers,
     dockerHost: rawAnswers.dockerHost || '',
+    port,
     healthUrl,
   };
 }
@@ -651,6 +679,15 @@ export function buildServerEnvEntry(
     if (remoteMode === 'ssh') {
       if (deployAnswers.host) settings.host = deployAnswers.host;
       if (deployAnswers.user) settings.user = deployAnswers.user;
+    }
+    // Per-env port (same key resolveDockerPublishPort reads). Prefer the
+    // docker "Default port" answer; fall back to init's project-level port.
+    // Do not invent || 3000 — missing port must stay missing so SSH deploy
+    // fails loudly instead of publishing a sibling environment's port.
+    const rawPort = deployAnswers.port ?? singleConfig?.port;
+    const n = Number(rawPort);
+    if (Number.isInteger(n) && n >= 1 && n <= 65535) {
+      settings.port = n;
     }
     return {
       enabled: true,

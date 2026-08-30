@@ -382,6 +382,7 @@ export function registerInitCommand(program) {
             {
               ...(opts.envName ? { envName: opts.envName } : {}),
               existingEnvNames: Object.keys(environments),
+              portDefault: singleConfig?.port ?? backendConfig?.port,
             }
           );
           primaryDeployType = deployAnswers.deployType;

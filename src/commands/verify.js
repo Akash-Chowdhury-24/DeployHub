@@ -7,6 +7,10 @@ import {
   runHealthChecksForEnvs,
   formatHealthCheckAllSummary,
 } from '../utils/health-check.js';
+import {
+  runDockerPortPublishChecksForEnvs,
+  verifyStageShouldRun,
+} from '../utils/docker-port-publish.js';
 
 /**
  * Standalone verify — same per-env URL resolution and summary as the deploy pipeline stage.
@@ -31,7 +35,7 @@ export async function runVerify(config, envFlag, options = {}) {
     };
   }
 
-  if (!anyEnvHasResolvableHealthCheckUrl(config, targets)) {
+  if (!verifyStageShouldRun(config, targets, anyEnvHasResolvableHealthCheckUrl)) {
     const label =
       targets.length === 1
         ? `environment "${targets[0]}"`
@@ -47,28 +51,47 @@ export async function runVerify(config, envFlag, options = {}) {
     };
   }
 
+  const portOutcome = await runDockerPortPublishChecksForEnvs(config, targets, {
+    requireRunning: true,
+    ...options,
+  });
+
   const { results, failures } = await runHealthChecksForEnvs(config, targets, options);
-  const multi = targets.length > 1 || failures.length > 0;
+  const allFailures = [
+    ...portOutcome.failures.map((f) => ({ envName: f.envName, url: '', error: f.error })),
+    ...failures,
+  ];
+  const portResults = portOutcome.results.map((r) => ({
+    envName: r.envName,
+    url: '',
+    status: 0,
+    elapsed: 0,
+    message: r.message,
+  }));
+  const mergedResults = [...portResults, ...results];
+  const multi = targets.length > 1 || allFailures.length > 0;
   const summary = multi ? formatHealthCheckAllSummary(results, failures) : '';
 
   let message = '';
-  if (failures.length === 0 && results.length === 1 && !multi) {
+  if (allFailures.length === 0 && results.length === 1 && portOutcome.results.length === 0 && !multi) {
     const r = results[0];
     message = `Health check passed (${r.envName}): HTTP ${r.status} (${r.elapsed}ms)`;
-  } else if (failures.length === 0 && results.length === 0) {
+  } else if (allFailures.length === 0 && results.length === 0 && portOutcome.results.length === 1) {
+    message = portOutcome.results[0].message;
+  } else if (allFailures.length === 0 && results.length === 0 && portOutcome.results.length === 0) {
     message = `No health check URL configured for the selected environment(s).`;
   }
 
   return {
-    ok: failures.length === 0 && results.length > 0,
+    ok: allFailures.length === 0 && (results.length > 0 || portOutcome.results.length > 0),
     targets,
-    results,
-    failures,
+    results: mergedResults,
+    failures: allFailures,
     summary,
     message:
       message ||
-      (failures.length > 0
-        ? failures[0].error
+      (allFailures.length > 0
+        ? allFailures[0].error
         : `All ${results.length} environment(s) passed health checks.`),
     skippedDisabled,
   };

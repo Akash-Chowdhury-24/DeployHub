@@ -41,6 +41,10 @@ import {
 } from '../utils/docker-remote.js';
 import { resolveDockerRemoteMode } from '../utils/docker-remote-mode.js';
 import {
+  checkEnvDockerPortPublish,
+  resolveDockerPublishPort,
+} from '../utils/docker-port-publish.js';
+import {
   buildPhpFpmUnitListCommand,
   formatPhpFpmMissingError,
   formatPhpFpmVersionMismatchError,
@@ -588,6 +592,22 @@ export async function runDeploymentChecks(config, envName, envConfig) {
               message: `Docker not reachable — ${msg}. Install Docker or set DOCKER_HOST for a remote daemon.`,
             };
           }
+        })
+      );
+    }
+
+    const publishPort = resolveDockerPublishPort(config, settings, envName);
+    if (dockerRemoteMode === 'ssh' || publishPort != null) {
+      checks.push(
+        await runCheck('Docker port published', async () => {
+          const outcome = await checkEnvDockerPortPublish(config, envName, {
+            requireRunning: false,
+          });
+          return {
+            name: 'Docker port published',
+            pass: outcome.pass,
+            message: outcome.message,
+          };
         })
       );
     }

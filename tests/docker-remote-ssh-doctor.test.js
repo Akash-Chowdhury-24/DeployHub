@@ -6,10 +6,11 @@ import path from 'path';
 const sshReachability = jest.fn();
 const sshKeyDoctor = jest.fn();
 
-/** @type {{ failConnect: boolean, ps: { code: number, stdout: string, stderr: string } }} */
+/** @type {{ failConnect: boolean, ps: { code: number, stdout: string, stderr: string }, inspect: { code: number, stdout: string, stderr: string } }} */
 const sshRemote = {
   failConnect: false,
   ps: { code: 0, stdout: 'CONTAINER ID', stderr: '' },
+  inspect: { code: 1, stdout: '', stderr: 'Error: No such object: demo' },
 };
 
 jest.unstable_mockModule('../src/deployment/init-helpers.js', () => ({
@@ -35,7 +36,11 @@ jest.unstable_mockModule('node-ssh', () => ({
       }
       return this;
     }
-    async execCommand() {
+    async execCommand(command) {
+      const cmd = String(command);
+      if (cmd.includes('docker inspect')) {
+        return sshRemote.inspect;
+      }
       return sshRemote.ps;
     }
     dispose() {}
@@ -49,6 +54,7 @@ const {
   formatRemoteDockerPermissionDenied,
   formatRemoteDockerDaemonOk,
 } = await import('../src/utils/docker-remote.js');
+const { formatDockerPortNotPublished } = await import('../src/utils/docker-port-publish.js');
 
 describe('doctor docker remote.mode ssh', () => {
   const prevEnv = { ...process.env };
@@ -67,6 +73,7 @@ describe('doctor docker remote.mode ssh', () => {
     );
     sshRemote.failConnect = false;
     sshRemote.ps = { code: 0, stdout: 'CONTAINER ID', stderr: '' };
+    sshRemote.inspect = { code: 1, stdout: '', stderr: 'Error: No such object: demo' };
   });
 
   afterEach(async () => {
@@ -93,6 +100,7 @@ describe('doctor docker remote.mode ssh', () => {
             host: '203.0.113.10',
             user,
             dockerImageName: 'org/app',
+            port: 80,
           },
         },
       },
@@ -117,13 +125,17 @@ describe('doctor docker remote.mode ssh', () => {
     expect(names).toContain('SSH host reachability');
     expect(names).toContain('Remote Docker daemon reachable');
     expect(names).toContain('Remote Docker permission');
+    expect(names).toContain('Docker port published');
     expect(names).not.toContain('Docker daemon');
 
     const daemon = checks.find((c) => c.name === 'Remote Docker daemon reachable');
     const perm = checks.find((c) => c.name === 'Remote Docker permission');
+    const ports = checks.find((c) => c.name === 'Docker port published');
     expect(daemon?.pass).toBe(true);
     expect(daemon?.message).toBe(formatRemoteDockerDaemonOk('203.0.113.10', 'ubuntu'));
     expect(perm?.pass).toBe(true);
+    expect(ports?.pass).toBe(true);
+    expect(ports?.message).toMatch(/No running container/);
   });
 
   test('wrong key path uses shared SSH key check message', async () => {
@@ -203,5 +215,37 @@ describe('doctor docker remote.mode ssh', () => {
     const daemon = checks.find((c) => c.name === 'Remote Docker daemon reachable');
     expect(daemon?.pass).toBe(false);
     expect(daemon?.message).toBe(formatRemoteDockerNotInstalled('203.0.113.10', 'ubuntu'));
+  });
+
+  test('running unpublished container uses exact port-not-published copy', async () => {
+    process.env.DOCKER_IMAGE_NAME = 'org/app';
+    process.env.SSH_HOST = '203.0.113.10';
+    process.env.SSH_USER = 'ubuntu';
+    process.env.SSH_KEY_PATH = keyPath;
+    sshKeyDoctor.mockResolvedValue({ ok: true, message: 'key ok' });
+    sshReachability.mockResolvedValue({ ok: true, message: 'tcp ok' });
+    sshRemote.inspect = { code: 0, stdout: '', stderr: '' };
+
+    const config = sshDockerConfig();
+    const checks = await runDeploymentChecks(config, 'production', config.environments.production);
+    const ports = checks.find((c) => c.name === 'Docker port published');
+    expect(ports?.pass).toBe(false);
+    expect(ports?.message).toBe(formatDockerPortNotPublished('demo', 80));
+  });
+
+  test('published mapping passes doctor', async () => {
+    process.env.DOCKER_IMAGE_NAME = 'org/app';
+    process.env.SSH_HOST = '203.0.113.10';
+    process.env.SSH_USER = 'ubuntu';
+    process.env.SSH_KEY_PATH = keyPath;
+    sshKeyDoctor.mockResolvedValue({ ok: true, message: 'key ok' });
+    sshReachability.mockResolvedValue({ ok: true, message: 'tcp ok' });
+    sshRemote.inspect = { code: 0, stdout: '0.0.0.0:80->80/tcp', stderr: '' };
+
+    const config = sshDockerConfig();
+    const checks = await runDeploymentChecks(config, 'production', config.environments.production);
+    const ports = checks.find((c) => c.name === 'Docker port published');
+    expect(ports?.pass).toBe(true);
+    expect(ports?.message).toBe("Container 'demo' publishes 0.0.0.0:80->");
   });
 });

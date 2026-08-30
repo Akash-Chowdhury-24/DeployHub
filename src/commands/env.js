@@ -164,6 +164,7 @@ export function registerEnvCommand(program) {
             existingEnvNames: Object.keys(config.environments || {}),
             deployType: opts.method,
             nonInteractive: Boolean(opts.yes),
+            portDefault: config.port,
           }
         );
       } catch (err) {
@@ -171,12 +172,21 @@ export function registerEnvCommand(program) {
         process.exit(1);
       }
 
+      // Docker env add must not inherit top-level port via singleConfig — that
+      // silently stamps another environment's port onto the new env. Interactive
+      // answers carry deployAnswers.port; --yes omits it so SSH deploy/doctor
+      // fail with the published-port error instead of a wrong fallback.
+      const entrySingleConfig =
+        deployAnswers.deployType === 'docker'
+          ? { framework: singleConfig?.framework, port: deployAnswers.port }
+          : singleConfig;
+
       config.environments[name] = buildServerEnvEntry(
         deployAnswers,
         projectType,
         config.project,
         backendConfig,
-        singleConfig
+        entrySingleConfig
       );
 
       if (!config.defaultEnvironment) {

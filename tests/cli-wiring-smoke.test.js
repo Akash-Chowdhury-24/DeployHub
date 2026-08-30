@@ -103,6 +103,7 @@ describe('CLI wiring smoke (real subprocess)', () => {
     expect(cfg.environments.staging.enabled).toBe(true);
     expect(cfg.unprefixedSecretEnvironment).toBe('production');
     expect(cfg.environments.staging.config.dockerImageName).toBe('wire-app');
+    expect(cfg.environments.staging.config.port).toBeUndefined();
 
     const list = await runCli(scratch, ['env', 'list']);
     expect(list.code).toBe(0);

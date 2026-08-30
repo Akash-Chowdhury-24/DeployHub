@@ -11,6 +11,10 @@ import {
   runHealthChecksForEnvs,
   formatHealthCheckAllSummary,
 } from '../utils/health-check.js';
+import {
+  runDockerPortPublishChecksForEnvs,
+  verifyStageShouldRun,
+} from '../utils/docker-port-publish.js';
 import { createLogger } from '../logger/index.js';
 
 /**
@@ -76,12 +80,28 @@ export function registerDeployCommand(program) {
             const deployed = /** @type {string[]} */ (
               ctx.state.deployedTargets || targets
             );
-            return anyEnvHasResolvableHealthCheckUrl(ctx.config, deployed);
+            return verifyStageShouldRun(
+              ctx.config,
+              deployed,
+              anyEnvHasResolvableHealthCheckUrl
+            );
           },
           async run(ctx) {
             const deployed = /** @type {string[]} */ (
               ctx.state.deployedTargets || targets
             );
+            const portOutcome = await runDockerPortPublishChecksForEnvs(
+              ctx.config,
+              deployed,
+              { requireRunning: true }
+            );
+            if (portOutcome.failures.length > 0) {
+              throw new Error(portOutcome.failures[0].error);
+            }
+            for (const r of portOutcome.results) {
+              console.log(chalk.green(`Docker port published (${r.envName}): ${r.message}`));
+            }
+
             const { results, failures } = await runHealthChecksForEnvs(
               ctx.config,
               deployed

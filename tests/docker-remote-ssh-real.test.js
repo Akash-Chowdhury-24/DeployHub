@@ -13,11 +13,13 @@ import { createSshExecSession } from '../src/deployment/ssh-connection.js';
 import { buildRemoteDockerCommands } from '../src/utils/docker-remote.js';
 import { createDockerProvider } from '../src/deployment/providers/docker.js';
 import { runDeploymentChecks } from '../src/commands/doctor.js';
+import { runVerify } from '../src/commands/verify.js';
 import {
   formatRemoteDockerSshFailure,
   formatRemoteDockerPermissionDenied,
   formatRemoteDockerDaemonOk,
 } from '../src/utils/docker-remote.js';
+import { formatDockerPortNotPublished } from '../src/utils/docker-port-publish.js';
 
 const CONTAINER = 'deployhub-test-docker-ssh';
 const IMAGE = 'deployhub-test-docker-ssh:ubuntu';
@@ -140,6 +142,7 @@ describeReal('remote Docker via SSH (real Ubuntu sshd + dockerd)', () => {
     tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'dh-docker-ssh-real-'));
     keyPath = await ensureSshdDocker(tmp);
     await execa('docker', ['pull', 'hello-world'], { timeout: 120000 });
+    await execa('docker', ['pull', 'nginx:alpine'], { timeout: 120000 });
   });
 
   afterAll(async () => {
@@ -169,6 +172,7 @@ describeReal('remote Docker via SSH (real Ubuntu sshd + dockerd)', () => {
             user,
             dockerImageName: 'hello-world',
             sshPort: SSH_PORT,
+            port: 80,
           },
         },
       },
@@ -240,6 +244,7 @@ describeReal('remote Docker via SSH (real Ubuntu sshd + dockerd)', () => {
             user: 'ubuntu',
             dockerImageName: 'deployhub-no-such-image-zzz',
             sshPort: SSH_PORT,
+            port: 80,
           },
         },
       },
@@ -338,6 +343,157 @@ describeReal('remote Docker via SSH (real Ubuntu sshd + dockerd)', () => {
     expect(perm?.message).toBe(formatRemoteDockerPermissionDenied('127.0.0.1', 'noperm'));
   });
 
+  function nginxSshConfig() {
+    return {
+      project: 'dh-nginx-port',
+      projectType: 'frontend',
+      environments: {
+        production: {
+          enabled: true,
+          method: 'docker',
+          trigger: 'manual',
+          config: {
+            remote: { mode: 'ssh' },
+            host: '127.0.0.1',
+            user: 'ubuntu',
+            dockerImageName: 'nginx',
+            sshPort: SSH_PORT,
+            port: 80,
+          },
+        },
+      },
+    };
+  }
+
+  test('SSH deploy publishes 0.0.0.0:80-> and redeploy keeps the mapping', async () => {
+    const config = nginxSshConfig();
+    const env = {
+      SSH_KEY_PATH: keyPath,
+      SSH_SSH_PORT: String(SSH_PORT),
+      DOCKER_IMAGE_NAME: 'nginx',
+      DOCKER_IMAGE_TAG: 'alpine',
+    };
+    const provider = createDockerProvider(config, 'production', env);
+
+    await provider.deploy(tmp);
+    const session = createSshExecSession({
+      host: '127.0.0.1',
+      user: 'ubuntu',
+      keyPath,
+      sshPort: SSH_PORT,
+    });
+    const ssh = await session.connect();
+    try {
+      const first = await session.exec(
+        ssh,
+        "docker inspect --format '{{range $p, $conf := .NetworkSettings.Ports}}{{range $conf}}{{.HostIp}}:{{.HostPort}}->{{end}}{{end}}' dh-nginx-port"
+      );
+      console.log('--- docker inspect after first deploy ---\n', first.stdout);
+      expect(first.stdout).toContain('0.0.0.0:80->');
+
+      await provider.deploy(tmp);
+      const second = await session.exec(
+        ssh,
+        "docker inspect --format '{{range $p, $conf := .NetworkSettings.Ports}}{{range $conf}}{{.HostIp}}:{{.HostPort}}->{{end}}{{end}}' dh-nginx-port"
+      );
+      console.log('--- docker inspect after redeploy ---\n', second.stdout);
+      expect(second.stdout).toContain('0.0.0.0:80->');
+    } finally {
+      ssh.dispose();
+    }
+  });
+
+  test('SSH deploy with port missing fails loudly instead of running unpublished', async () => {
+    const config = {
+      project: 'dh-nginx-port',
+      projectType: 'frontend',
+      environments: {
+        production: {
+          enabled: true,
+          method: 'docker',
+          trigger: 'manual',
+          config: {
+            remote: { mode: 'ssh' },
+            host: '127.0.0.1',
+            user: 'ubuntu',
+            dockerImageName: 'nginx',
+            sshPort: SSH_PORT,
+          },
+        },
+      },
+    };
+    const provider = createDockerProvider(config, 'production', {
+      SSH_KEY_PATH: keyPath,
+      SSH_SSH_PORT: String(SSH_PORT),
+      DOCKER_IMAGE_NAME: 'nginx',
+      DOCKER_IMAGE_TAG: 'alpine',
+    });
+    await expect(provider.deploy(tmp)).rejects.toThrow(/requires a published port/);
+  });
+
+  test('doctor and verify pass on published port and fail with exact copy when -p is removed', async () => {
+    const config = nginxSshConfig();
+    process.env.DOCKER_IMAGE_NAME = 'nginx';
+    process.env.DOCKER_IMAGE_TAG = 'alpine';
+    process.env.SSH_HOST = '127.0.0.1';
+    process.env.SSH_USER = 'ubuntu';
+    process.env.SSH_KEY_PATH = keyPath;
+    process.env.SSH_SSH_PORT = String(SSH_PORT);
+
+    const provider = createDockerProvider(config, 'production', { ...process.env });
+    await provider.deploy(tmp);
+
+    const passChecks = await runDeploymentChecks(
+      config,
+      'production',
+      config.environments.production
+    );
+    const passPort = passChecks.find((c) => c.name === 'Docker port published');
+    expect(passPort?.pass).toBe(true);
+    expect(passPort?.message).toBe("Container 'dh-nginx-port' publishes 0.0.0.0:80->");
+    console.log(
+      '--- doctor after published deploy ---\n',
+      passChecks.map((c) => `  ${c.pass ? '✓' : '✗'} ${c.name}: ${c.message}`).join('\n')
+    );
+
+    const passVerify = await runVerify(config, 'production');
+    expect(passVerify.ok).toBe(true);
+    expect(passVerify.message).toMatch(/publishes 0\.0\.0\.0:80->/);
+    console.log('--- verify after published deploy ---\n', passVerify.message);
+
+    const session = createSshExecSession({
+      host: '127.0.0.1',
+      user: 'ubuntu',
+      keyPath,
+      sshPort: SSH_PORT,
+    });
+    const ssh = await session.connect();
+    try {
+      await session.exec(ssh, "docker rm -f dh-nginx-port 2>/dev/null || true");
+      await session.exec(ssh, 'docker run -d --name dh-nginx-port nginx:alpine');
+    } finally {
+      ssh.dispose();
+    }
+
+    const failChecks = await runDeploymentChecks(
+      config,
+      'production',
+      config.environments.production
+    );
+    const failPort = failChecks.find((c) => c.name === 'Docker port published');
+    expect(failPort?.pass).toBe(false);
+    expect(failPort?.message).toBe(formatDockerPortNotPublished('dh-nginx-port', 80));
+    console.log(
+      '--- doctor after unpublished -p removed ---\n',
+      failChecks.map((c) => `  ${c.pass ? '✓' : '✗'} ${c.name}: ${c.message}`).join('\n')
+    );
+
+    const failVerify = await runVerify(config, 'production');
+    expect(failVerify.ok).toBe(false);
+    expect(failVerify.message).toBe(formatDockerPortNotPublished('dh-nginx-port', 80));
+    console.log('--- verify after unpublished -p removed ---\n', failVerify.message);
+  });
+
   test('raw/local mode still talks to the host Docker daemon (regression)', async () => {
     const localProvider = createDockerProvider(
       {
@@ -353,6 +509,15 @@ describeReal('remote Docker via SSH (real Ubuntu sshd + dockerd)', () => {
       { DOCKER_IMAGE_NAME: 'hello-world', DOCKER_IMAGE_TAG: 'latest' }
     );
     await localProvider.testConnection();
+    expect(localProvider.remoteMode).toBe('local');
+    await localProvider.deploy(tmp);
+    const localRun = await execa('docker', [
+      'inspect',
+      '--format',
+      '{{.HostConfig.PortBindings}}',
+      'hello-world',
+    ]).catch(() => ({ stdout: 'container-exited' }));
+    console.log('--- local mode deploy (no port) PortBindings ---\n', localRun.stdout);
     expect(localProvider.remoteMode).toBe('local');
 
     const rawProvider = createDockerProvider(

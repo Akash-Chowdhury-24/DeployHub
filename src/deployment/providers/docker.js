@@ -10,6 +10,13 @@ import {
   resolveDockerSshTarget,
   buildRemoteDockerCommands,
 } from '../../utils/docker-remote.js';
+import {
+  resolveDockerPublishPort,
+  formatDockerSshPortRequired,
+  evaluateDockerPortPublish,
+  buildDockerInspectPortsArgs,
+  buildDockerInspectPortsCommand,
+} from '../../utils/docker-port-publish.js';
 
 /**
  * @param {import('../../core/config.js').DeployHubConfig} config
@@ -38,6 +45,7 @@ export function createDockerProvider(config, envName, env = process.env) {
     imageOps;
   // Env-scoped like PM2/Nginx — same-daemon multi-env must not share one container name.
   const containerName = resolveDockerContainerName(config, envName);
+  const publishPort = resolveDockerPublishPort(config, settings, envName);
 
   function sshTarget() {
     return resolveDockerSshTarget(settings, effectiveEnv);
@@ -77,7 +85,10 @@ export function createDockerProvider(config, envName, env = process.env) {
     }
 
     if (remoteMode === 'ssh') {
-      await deployOverSsh(imageRef);
+      if (publishPort == null) {
+        throw new Error(formatDockerSshPortRequired(envName));
+      }
+      await deployOverSsh(imageRef, publishPort);
       log.success('Docker deployment complete');
       return;
     }
@@ -90,19 +101,59 @@ export function createDockerProvider(config, envName, env = process.env) {
       { stdio: 'pipe', env: dockerEnv }
     ).catch(() => {});
 
-    await execa('docker', ['run', '-d', '--rm', '--name', containerName, imageRef], {
+    /** @type {string[]} */
+    const runArgs = ['run', '-d', '--rm', '--name', containerName];
+    if (publishPort != null) {
+      runArgs.push('-p', `${publishPort}:${publishPort}`);
+    }
+    runArgs.push(imageRef);
+
+    await execa('docker', runArgs, {
       stdio: 'inherit',
       env: dockerEnv,
     });
+
+    if (publishPort != null) {
+      await assertLocalPortPublished(dockerEnv, publishPort);
+    }
 
     log.success('Docker deployment complete');
   }
 
   /**
-   * @param {string} imageRef
+   * @param {Record<string, string>} dockerEnv
+   * @param {number} port
    */
-  async function deployOverSsh(imageRef) {
-    const cmds = buildRemoteDockerCommands(imageRef, containerName);
+  async function assertLocalPortPublished(dockerEnv, port) {
+    try {
+      const inspected = await execa('docker', buildDockerInspectPortsArgs(containerName), {
+        stdio: 'pipe',
+        env: dockerEnv,
+      });
+      const verdict = evaluateDockerPortPublish(
+        { code: 0, stdout: inspected.stdout },
+        { containerName, port, requireRunning: false }
+      );
+      if (!verdict.pass) {
+        throw new Error(verdict.message);
+      }
+      if (verdict.reason === 'published') {
+        log.info(verdict.message);
+      }
+    } catch (err) {
+      if (err instanceof Error && err.message.startsWith("Container '")) {
+        throw err;
+      }
+      // One-shot images (hello-world) exit before inspect; verify/doctor catch long-running misses.
+    }
+  }
+
+  /**
+   * @param {string} imageRef
+   * @param {number} port
+   */
+  async function deployOverSsh(imageRef, port) {
+    const cmds = buildRemoteDockerCommands(imageRef, containerName, {}, { publishPort: port });
     const session = sshSession();
     const ssh = await session.connect();
     try {
@@ -126,6 +177,21 @@ export function createDockerProvider(config, envName, env = process.env) {
         timeoutMs: Math.max(session.defaultExecTimeoutMs, 300_000),
       });
       await session.exec(ssh, cmds.run);
+      const inspected = await session.execUnchecked(
+        ssh,
+        buildDockerInspectPortsCommand(containerName)
+      );
+      const verdict = evaluateDockerPortPublish(inspected, {
+        containerName,
+        port,
+        requireRunning: false,
+      });
+      if (!verdict.pass) {
+        throw new Error(verdict.message);
+      }
+      if (verdict.reason === 'published') {
+        log.info(verdict.message);
+      }
     } finally {
       ssh.dispose();
     }

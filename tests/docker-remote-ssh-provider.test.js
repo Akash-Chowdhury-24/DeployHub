@@ -9,7 +9,11 @@ jest.unstable_mockModule('node-ssh', () => ({
       return this;
     }
     async execCommand(command) {
-      execCommands.push(String(command));
+      const cmd = String(command);
+      execCommands.push(cmd);
+      if (cmd.includes('docker inspect')) {
+        return { code: 0, stdout: '0.0.0.0:80->', stderr: '' };
+      }
       return { code: 0, stdout: 'Up 3 seconds', stderr: '' };
     }
     dispose() {}
@@ -60,7 +64,12 @@ describe('docker provider remote modes', () => {
   beforeEach(() => {
     execCommands.length = 0;
     mockExeca.mockReset();
-    mockExeca.mockResolvedValue({ stdout: '', stderr: '' });
+    mockExeca.mockImplementation(async (cmd, args = []) => {
+      if (cmd === 'docker' && args[0] === 'inspect') {
+        return { stdout: '0.0.0.0:80->', stderr: '' };
+      }
+      return { stdout: '', stderr: '' };
+    });
   });
 
   test('local mode uses execa docker run, not node-ssh', async () => {
@@ -73,6 +82,21 @@ describe('docker provider remote modes', () => {
     expect(mockExeca).toHaveBeenCalledWith(
       'docker',
       ['run', '-d', '--rm', '--name', 'myapp', 'org/app:abc1234'],
+      expect.any(Object)
+    );
+    expect(execCommands).toEqual([]);
+  });
+
+  test('local mode with port publishes -p and still does not use node-ssh', async () => {
+    const provider = createDockerProvider(
+      dockerConfig({ remote: { mode: 'local' }, dockerImageName: 'org/app', port: 80 }),
+      'production',
+      {}
+    );
+    await provider.deploy('/tmp/artifact');
+    expect(mockExeca).toHaveBeenCalledWith(
+      'docker',
+      ['run', '-d', '--rm', '--name', 'myapp', '-p', '80:80', 'org/app:abc1234'],
       expect.any(Object)
     );
     expect(execCommands).toEqual([]);
@@ -97,6 +121,35 @@ describe('docker provider remote modes', () => {
     expect(execCommands).toEqual([]);
   });
 
+  test('raw mode with port publishes -p via docker CLI, not node-ssh', async () => {
+    const provider = createDockerProvider(
+      dockerConfig({
+        remote: { mode: 'raw' },
+        dockerHost: 'tcp://203.0.113.10:2376',
+        dockerImageName: 'org/app',
+        port: 80,
+      }),
+      'production',
+      {}
+    );
+    await provider.deploy('/tmp/artifact');
+    const runCall = mockExeca.mock.calls.find(
+      (c) => c[0] === 'docker' && c[1]?.[0] === 'run'
+    );
+    expect(runCall[1]).toEqual([
+      'run',
+      '-d',
+      '--rm',
+      '--name',
+      'myapp',
+      '-p',
+      '80:80',
+      'org/app:abc1234',
+    ]);
+    expect(runCall[2].env.DOCKER_HOST).toBe('tcp://203.0.113.10:2376');
+    expect(execCommands).toEqual([]);
+  });
+
   test('legacy DOCKER_HOST env without remote.mode is raw (CLI transport)', async () => {
     const provider = createDockerProvider(
       dockerConfig({ dockerImageName: 'org/app' }),
@@ -113,7 +166,7 @@ describe('docker provider remote modes', () => {
 
   test('ssh mode without SSH_HOST does not fall back to local docker run', async () => {
     const provider = createDockerProvider(
-      dockerConfig({ remote: { mode: 'ssh' }, dockerImageName: 'org/app' }),
+      dockerConfig({ remote: { mode: 'ssh' }, dockerImageName: 'org/app', port: 80 }),
       'production',
       { SSH_KEY: '-----BEGIN PRIVATE KEY-----\nk\n-----END PRIVATE KEY-----\n' }
     );
@@ -127,7 +180,7 @@ describe('docker provider remote modes', () => {
     expect(execCommands).toEqual([]);
   });
 
-  test('ssh mode runs pull/run/stop/rm over node-ssh, not Docker CLI ssh://', async () => {
+  test('ssh mode without port fails loudly instead of running unpublished', async () => {
     const provider = createDockerProvider(
       dockerConfig({
         remote: { mode: 'ssh' },
@@ -138,11 +191,75 @@ describe('docker provider remote modes', () => {
       'production',
       { SSH_KEY: '-----BEGIN PRIVATE KEY-----\nk\n-----END PRIVATE KEY-----\n' }
     );
+    await expect(provider.deploy('/tmp/artifact')).rejects.toThrow(
+      /requires a published port/
+    );
+    expect(execCommands.some((c) => c.startsWith('docker run '))).toBe(false);
+    expect(mockExeca.mock.calls.some((c) => c[0] === 'docker' && c[1]?.[0] === 'run')).toBe(
+      false
+    );
+  });
+
+  test('second ssh docker env without port does not inherit top-level port at deploy', async () => {
+    const config = {
+      project: 'myapp',
+      port: 8000,
+      defaultEnvironment: 'production',
+      environments: {
+        production: {
+          enabled: true,
+          method: 'docker',
+          trigger: 'manual',
+          config: {
+            remote: { mode: 'ssh' },
+            host: '203.0.113.10',
+            user: 'ubuntu',
+            dockerImageName: 'org/app',
+            port: 8000,
+          },
+        },
+        staging: {
+          enabled: true,
+          method: 'docker',
+          trigger: 'manual',
+          config: {
+            remote: { mode: 'ssh' },
+            host: '203.0.113.11',
+            user: 'ubuntu',
+            dockerImageName: 'org/app',
+          },
+        },
+      },
+    };
+    const provider = createDockerProvider(config, 'staging', {
+      SSH_KEY: '-----BEGIN PRIVATE KEY-----\nk\n-----END PRIVATE KEY-----\n',
+    });
+    await expect(provider.deploy('/tmp/artifact')).rejects.toThrow(
+      /requires a published port/
+    );
+    expect(execCommands.some((c) => c.startsWith('docker run '))).toBe(false);
+  });
+
+  test('ssh mode runs pull/run/stop/rm over node-ssh, not Docker CLI ssh://', async () => {
+    const provider = createDockerProvider(
+      dockerConfig({
+        remote: { mode: 'ssh' },
+        host: '203.0.113.10',
+        user: 'ubuntu',
+        dockerImageName: 'org/app',
+        port: 80,
+      }),
+      'production',
+      { SSH_KEY: '-----BEGIN PRIVATE KEY-----\nk\n-----END PRIVATE KEY-----\n' }
+    );
     await provider.deploy('/tmp/artifact');
     expect(execCommands.some((c) => c.startsWith('docker pull '))).toBe(true);
-    expect(execCommands.some((c) => c.startsWith('docker run '))).toBe(true);
+    expect(execCommands.some((c) => c.includes(`docker run -d --rm --name 'myapp' -p '80:80'`))).toBe(
+      true
+    );
     expect(execCommands.some((c) => c.startsWith('docker stop '))).toBe(true);
     expect(execCommands.some((c) => c.startsWith('docker rm '))).toBe(true);
+    expect(execCommands.some((c) => c.includes('docker inspect'))).toBe(true);
     expect(mockExeca.mock.calls.some((c) => c[0] === 'docker' && c[1]?.[0] === 'run')).toBe(
       false
     );

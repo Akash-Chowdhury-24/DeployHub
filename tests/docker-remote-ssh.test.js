@@ -23,7 +23,20 @@ import {
   getEnvSettings,
   METHOD_SETTINGS_ENV_OVERLAY,
 } from '../src/core/environments.js';
+import { saveConfig, loadConfig } from '../src/core/config.js';
+import { getBackendInfo } from '../src/detectors/backend.detector.js';
+import fs from 'fs-extra';
+import os from 'os';
+import path from 'path';
 import { shellQuote } from '../src/utils/shell-quote.js';
+import {
+  formatDockerPortNotPublished,
+  formatDockerSshPortRequired,
+  evaluateDockerPortPublish,
+  inspectShowsHostPortMapping,
+  resolveDockerPublishPort,
+  checkEnvDockerPortPublish,
+} from '../src/utils/docker-port-publish.js';
 
 describe('resolveDockerRemoteMode', () => {
   test('explicit remote.mode wins', () => {
@@ -67,8 +80,62 @@ describe('remote docker command quoting', () => {
     expect(cmds.pull).toBe(`docker pull ${shellQuote("myorg/app:tag'x")}`);
     expect(cmds.run).toContain(`--name ${shellQuote('web;rm')}`);
     expect(cmds.run).toContain(`-e ${shellQuote("FOO=bar'baz")}`);
+    expect(cmds.run).not.toContain(' -p ');
     expect(cmds.stop).toContain(shellQuote('web;rm'));
     expect(cmds.rm).toContain(shellQuote('web;rm'));
+  });
+
+  test('buildRemoteDockerCommands quotes -p host:container when publishPort is set', () => {
+    const cmds = buildRemoteDockerCommands('nginx:alpine', 'web', {}, { publishPort: 80 });
+    expect(cmds.run).toContain(`-p ${shellQuote('80:80')}`);
+  });
+});
+
+describe('docker port publish inspect', () => {
+  test('exact unpublished message', () => {
+    expect(formatDockerPortNotPublished('hello-world', 80)).toBe(
+      "Container 'hello-world' is running but port 80 is not published on the host (no 0.0.0.0:80-> mapping).\nThe app is not reachable from outside the container."
+    );
+  });
+
+  test('ssh missing port is loud, not a silent unpublished run', () => {
+    expect(formatDockerSshPortRequired('production')).toMatch(/requires a published port/);
+    expect(resolveDockerPublishPort({}, {})).toBeNull();
+    expect(resolveDockerPublishPort({}, { port: 80 })).toBe(80);
+    expect(resolveDockerPublishPort({ port: 8000 }, {})).toBe(8000);
+  });
+
+  test('inspectShowsHostPortMapping requires 0.0.0.0:<port>->', () => {
+    expect(inspectShowsHostPortMapping('0.0.0.0:80->80/tcp', 80)).toBe(true);
+    expect(inspectShowsHostPortMapping('', 80)).toBe(false);
+    expect(inspectShowsHostPortMapping('0.0.0.0:8080->8080/tcp', 80)).toBe(false);
+  });
+
+  test('evaluate: running unpublished fails with exact copy', () => {
+    const verdict = evaluateDockerPortPublish(
+      { code: 0, stdout: 'running|' },
+      { containerName: 'hello-world', port: 80, requireRunning: true }
+    );
+    expect(verdict.pass).toBe(false);
+    expect(verdict.message).toBe(formatDockerPortNotPublished('hello-world', 80));
+  });
+
+  test('evaluate: stopped container is skip when requireRunning is false', () => {
+    const verdict = evaluateDockerPortPublish(
+      { code: 0, stdout: 'stopped|' },
+      { containerName: 'hello-world', port: 80, requireRunning: false }
+    );
+    expect(verdict.pass).toBe(true);
+    expect(verdict.reason).toBe('not-running');
+  });
+
+  test('evaluate: missing container is skip when requireRunning is false', () => {
+    const verdict = evaluateDockerPortPublish(
+      { code: 1, stdout: '', stderr: 'No such object' },
+      { containerName: 'hello-world', port: 80, requireRunning: false }
+    );
+    expect(verdict.pass).toBe(true);
+    expect(verdict.reason).toBe('not-running');
   });
 });
 
@@ -275,6 +342,198 @@ describe('buildServerEnvEntry docker remote', () => {
     );
     expect(entry.config.remote).toEqual({ mode: 'raw' });
     expect(entry.config.dockerHost).toBe('tcp://203.0.113.10:2376');
+  });
+
+  test('docker branch copies deployAnswers.port onto environments.<env>.config.port', () => {
+    const entry = buildServerEnvEntry(
+      {
+        deployType: 'docker',
+        remoteMode: 'ssh',
+        dockerImageName: 'org/app',
+        host: '203.0.113.10',
+        user: 'ubuntu',
+        port: 9000,
+      },
+      'backend',
+      'demo',
+      null,
+      { port: 8000 }
+    );
+    expect(entry.config.port).toBe(9000);
+  });
+
+  test('docker branch copies singleConfig.port when env add/init did not pass deployAnswers.port', () => {
+    const entry = buildServerEnvEntry(
+      {
+        deployType: 'docker',
+        remoteMode: 'ssh',
+        dockerImageName: 'org/app',
+        host: '203.0.113.10',
+        user: 'ubuntu',
+      },
+      'backend',
+      'demo',
+      null,
+      { port: 8000 }
+    );
+    expect(entry.config.port).toBe(8000);
+  });
+
+  test('two docker envs from env add keep independent ports', () => {
+    const production = buildServerEnvEntry(
+      {
+        deployType: 'docker',
+        remoteMode: 'ssh',
+        dockerImageName: 'org/app',
+        host: '203.0.113.10',
+        user: 'ubuntu',
+        port: 8000,
+      },
+      'backend',
+      'demo',
+      null,
+      null
+    );
+    const staging = buildServerEnvEntry(
+      {
+        deployType: 'docker',
+        remoteMode: 'ssh',
+        dockerImageName: 'org/app',
+        host: '203.0.113.11',
+        user: 'ubuntu',
+        port: 9000,
+      },
+      'backend',
+      'demo',
+      null,
+      { port: 8000 }
+    );
+    const config = {
+      project: 'demo',
+      port: 8000,
+      defaultEnvironment: 'production',
+      environments: { production, staging },
+    };
+
+    expect(production.config.port).toBe(8000);
+    expect(staging.config.port).toBe(9000);
+    expect(
+      resolveDockerPublishPort(config, getEnvSettings(production), 'production')
+    ).toBe(8000);
+    expect(resolveDockerPublishPort(config, getEnvSettings(staging), 'staging')).toBe(9000);
+  });
+
+  test('legacy demo-fastapi-project top-level port still resolves via fallback', async () => {
+    const defaults = getBackendInfo('fastapi');
+    const environments = {
+      default: {
+        enabled: true,
+        method: 'docker',
+        trigger: 'push',
+        config: {
+          deploymentType: 'server',
+          dockerImageName: 'demo-fastapi-project',
+          dockerRegistryUrl: '',
+          remote: { mode: 'ssh' },
+          dockerHost: '',
+          host: '203.0.113.10',
+          user: 'ubuntu',
+        },
+      },
+    };
+
+    const config = {
+      project: 'demo-fastapi-project',
+      version: '0.0.0',
+      projectType: 'backend',
+      framework: 'fastapi',
+      language: defaults.language,
+      buildCommand: defaults.buildCommand ?? null,
+      startCommand: defaults.startCommand,
+      buildOutput: defaults.buildOutput,
+      port: 8000,
+      artifact: true,
+      storage: ['local'],
+      defaultEnvironment: 'default',
+      unprefixedSecretEnvironment: 'default',
+      legacyHistoryMigrated: true,
+      environments,
+      healthCheck: { url: '', timeout: 30 },
+      pipeline: { test: true, docker: true, deploy: true, verify: false, notify: false },
+    };
+
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'dh-fastapi-init-port-'));
+    try {
+      await saveConfig(config, tmp);
+      const onDisk = await fs.readJson(path.join(tmp, 'deployhub.config.json'));
+      const loaded = await loadConfig(tmp);
+
+      expect(onDisk.port).toBe(8000);
+      expect(onDisk.environments.default.config.port).toBeUndefined();
+      expect(loaded.port).toBe(8000);
+      expect(loaded.environments.default.config.port).toBeUndefined();
+      expect(
+        resolveDockerPublishPort(
+          loaded,
+          getEnvSettings(loaded.environments.default),
+          'default'
+        )
+      ).toBe(8000);
+    } finally {
+      await fs.remove(tmp);
+    }
+  });
+
+  test('env add docker ssh with no port fails loudly instead of inheriting top-level', async () => {
+    const production = buildServerEnvEntry(
+      {
+        deployType: 'docker',
+        remoteMode: 'ssh',
+        dockerImageName: 'demo-fastapi-project',
+        host: '203.0.113.10',
+        user: 'ubuntu',
+        port: 8000,
+      },
+      'backend',
+      'demo-fastapi-project',
+      null,
+      { port: 8000 }
+    );
+    // Same as `deployhub env add staging --method docker --yes`: no port answer,
+    // and env add does not pass top-level singleConfig.port through.
+    const staging = buildServerEnvEntry(
+      {
+        deployType: 'docker',
+        remoteMode: 'ssh',
+        dockerImageName: 'demo-fastapi-project',
+        host: '203.0.113.11',
+        user: 'ubuntu',
+      },
+      'backend',
+      'demo-fastapi-project',
+      null,
+      { framework: 'fastapi', port: undefined }
+    );
+
+    const config = {
+      project: 'demo-fastapi-project',
+      port: 8000,
+      defaultEnvironment: 'production',
+      environments: { production, staging },
+    };
+
+    expect(production.config.port).toBe(8000);
+    expect(staging.config.port).toBeUndefined();
+    expect(
+      resolveDockerPublishPort(config, getEnvSettings(production), 'production')
+    ).toBe(8000);
+    expect(resolveDockerPublishPort(config, getEnvSettings(staging), 'staging')).toBeNull();
+
+    const outcome = await checkEnvDockerPortPublish(config, 'staging', {
+      requireRunning: false,
+    });
+    expect(outcome.pass).toBe(false);
+    expect(outcome.message).toBe(formatDockerSshPortRequired('staging'));
   });
 });
 

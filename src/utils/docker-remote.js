@@ -178,8 +178,9 @@ export async function probeRemoteDockerPs(target) {
  * @param {string} imageRef
  * @param {string} containerName
  * @param {Record<string, string>} [runEnv]
+ * @param {{ publishPort?: number|null }} [options]
  */
-export function buildRemoteDockerCommands(imageRef, containerName, runEnv = {}) {
+export function buildRemoteDockerCommands(imageRef, containerName, runEnv = {}, options = {}) {
   const image = shellQuote(imageRef);
   const name = shellQuote(containerName);
   /** @type {string[]} */
@@ -188,12 +189,15 @@ export function buildRemoteDockerCommands(imageRef, containerName, runEnv = {}) 
     envFlags.push(`-e ${shellQuote(`${key}=${value}`)}`);
   }
   const envArg = envFlags.length > 0 ? `${envFlags.join(' ')} ` : '';
+  const publishPort = options.publishPort;
+  const pFlag =
+    publishPort != null ? `-p ${shellQuote(`${publishPort}:${publishPort}`)} ` : '';
 
   return {
     stop: `docker stop ${name} 2>/dev/null || true`,
     rm: `docker rm -f ${name} 2>/dev/null || true`,
     pull: `docker pull ${image}`,
-    run: `docker run -d --rm --name ${name} ${envArg}${image}`,
+    run: `docker run -d --rm --name ${name} ${pFlag}${envArg}${image}`,
     ps: `docker ps --filter ${shellQuote(`name=^/${containerName}$`)} --format ${shellQuote('{{.Status}}')}`,
     info: 'docker info',
     /**

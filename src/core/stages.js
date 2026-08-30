@@ -8,6 +8,11 @@ import {
   anyEnvHasResolvableHealthCheckUrl,
   runHealthChecksForEnvs,
 } from '../utils/health-check.js';
+import {
+  anyDockerEnvHasPublishPort,
+  runDockerPortPublishChecksForEnvs,
+  verifyStageShouldRun,
+} from '../utils/docker-port-publish.js';
 import { getProjectVersion } from '../utils/version.js';
 import { resolveBuildId } from '../utils/build-id.js';
 import { ensureDeployScaffold } from '../utils/scaffold.js';
@@ -224,12 +229,25 @@ export function buildPipelineStages(config, cwd, state) {
     {
       name: 'verify',
       enabled: (ctx) => {
-        if (ctx.config.pipeline.verify !== true) return false;
+        if (ctx.config.pipeline.verify !== true) {
+          const deployed = /** @type {string[]} */ (ctx.state.deployedTargets || []);
+          return anyDockerEnvHasPublishPort(ctx.config, deployed);
+        }
         const deployed = /** @type {string[]} */ (ctx.state.deployedTargets || []);
-        return anyEnvHasResolvableHealthCheckUrl(ctx.config, deployed);
+        return verifyStageShouldRun(
+          ctx.config,
+          deployed,
+          anyEnvHasResolvableHealthCheckUrl
+        );
       },
       async run(ctx) {
         const deployed = /** @type {string[]} */ (ctx.state.deployedTargets || []);
+        const portOutcome = await runDockerPortPublishChecksForEnvs(ctx.config, deployed, {
+          requireRunning: true,
+        });
+        if (portOutcome.failures.length > 0) {
+          throw new Error(portOutcome.failures[0].error);
+        }
         const { results, failures } = await runHealthChecksForEnvs(ctx.config, deployed);
         if (failures.length > 0) {
           throw new Error(failures[0].error);
