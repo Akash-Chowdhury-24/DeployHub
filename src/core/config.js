@@ -54,6 +54,16 @@ const MethodConfigSchema = z
     dockerImageName: z.string().optional(),
     dockerRegistryUrl: z.string().optional(),
     dockerHost: z.string().optional(),
+    /**
+     * Docker-method only. Kubernetes must ignore this — it deploys via kubectl,
+     * never a remote Docker daemon. `ssh` = node-ssh + remote docker CLI;
+     * `local` = this machine; `raw` = unmanaged DOCKER_HOST (ssh:// or tcp://).
+     */
+    remote: z
+      .object({
+        mode: z.enum(['ssh', 'local', 'raw']),
+      })
+      .optional(),
     healthCheckUrl: z.string().optional(),
     appName: z.string().optional(),
     framework: z.string().optional(),

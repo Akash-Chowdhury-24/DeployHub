@@ -19,6 +19,9 @@ import { getEnvSettings, mergeMethodSettingsIntoEnv } from '../../core/environme
 export function createKubernetesProvider(config, envName, env = process.env) {
   const log = createLogger('kubernetes');
   const settings = getEnvSettings(config.environments?.[envName]);
+  // Overlay is a field whitelist (METHOD_SETTINGS_ENV_OVERLAY). It never copies
+  // docker `remote.mode` / SSH host identity. Kubernetes talks to the cluster
+  // via kubectl regardless of any docker-ssh fields that might sit on settings.
   const effectiveEnv = mergeMethodSettingsIntoEnv(env, settings);
   const imageOps = createDockerImageDeployContext(config, effectiveEnv, log);
 

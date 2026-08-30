@@ -32,6 +32,15 @@ import { checkImagePullability } from '../utils/docker-image-deploy.js';
 import { namespaceExists } from '../utils/kubernetes-namespace.js';
 import { resolvePhpVersion } from '../utils/php-version.js';
 import {
+  resolveDockerSshTarget,
+  probeRemoteDockerPs,
+  formatRemoteDockerSshFailure,
+  formatRemoteDockerNotInstalled,
+  formatRemoteDockerPermissionDenied,
+  formatRemoteDockerDaemonOk,
+} from '../utils/docker-remote.js';
+import { resolveDockerRemoteMode } from '../utils/docker-remote-mode.js';
+import {
   buildPhpFpmUnitListCommand,
   formatPhpFpmMissingError,
   formatPhpFpmVersionMismatchError,
@@ -183,14 +192,16 @@ export async function runDeploymentChecks(config, envName, envConfig) {
 
   /** @type {CheckResult[]} */
   const checks = [];
-  const requiredKeys = getDeploymentEnvKeys(deployType, config);
+  const requiredKeys = getDeploymentEnvKeys(deployType, config, settings);
 
   checks.push(
     await runCheck(`${deployType} env vars`, async () => {
       const missing = requiredKeys.filter((k) => {
         if (k === 'SSH_KEY_PATH') {
-          return !process.env.SSH_KEY_PATH && !process.env.SSH_KEY;
+          return !process.env.SSH_KEY_PATH && !process.env.SSH_KEY && !settings.keyPath;
         }
+        if (k === 'SSH_HOST') return !(settings.host || process.env.SSH_HOST);
+        if (k === 'SSH_USER') return !(settings.user || process.env.SSH_USER);
         return !process.env[k];
       });
       if (missing.length > 0) {
@@ -447,22 +458,139 @@ export async function runDeploymentChecks(config, envName, envConfig) {
   }
 
   if (deployType === 'docker') {
-    checks.push(
-      await runCheck('Docker daemon', async () => {
-        try {
-          const provider = getDeploymentProvider('docker', config, envName);
-          await provider.testConnection();
-          return { name: 'Docker daemon', pass: true, message: 'Docker daemon reachable' };
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
+    const dockerRemoteMode = resolveDockerRemoteMode(settings, process.env);
+
+    if (dockerRemoteMode === 'ssh') {
+      const target = resolveDockerSshTarget(settings, process.env);
+      const host = target.host;
+      const user = target.user;
+      const keyPath = target.keyPath;
+      const sshPort = target.sshPort;
+
+      checks.push(
+        await runCheck('SSH key', async () => {
+          const result = await validateSshKeyForDoctor(
+            keyPath ? String(keyPath) : undefined,
+            process.env.SSH_KEY
+          );
           return {
-            name: 'Docker daemon',
-            pass: false,
-            message: `Docker not reachable — ${msg}. Install Docker or set DOCKER_HOST for a remote daemon.`,
+            name: 'SSH key',
+            pass: result.ok,
+            message: result.message,
           };
-        }
-      })
-    );
+        })
+      );
+
+      checks.push(
+        await runCheck('SSH host reachability', async () => {
+          if (!host) {
+            return {
+              name: 'SSH host reachability',
+              pass: false,
+              message: 'SSH_HOST is required — set it in .env to your server IP or hostname.',
+            };
+          }
+          const result = await testSshHostReachability(String(host), sshPort);
+          return {
+            name: 'SSH host reachability',
+            pass: result.ok,
+            message: result.message,
+          };
+        })
+      );
+
+      checks.push(
+        await runCheck('Remote Docker daemon reachable', async () => {
+          const probe = await probeRemoteDockerPs(target);
+          if (!probe.sshOk) {
+            return {
+              name: 'Remote Docker daemon reachable',
+              pass: false,
+              message: formatRemoteDockerSshFailure(host, user),
+            };
+          }
+          if (probe.kind === 'not-installed') {
+            return {
+              name: 'Remote Docker daemon reachable',
+              pass: false,
+              message: formatRemoteDockerNotInstalled(host, user),
+            };
+          }
+          if (probe.kind === 'ok' || probe.kind === 'permission') {
+            return {
+              name: 'Remote Docker daemon reachable',
+              pass: true,
+              message: formatRemoteDockerDaemonOk(host, user),
+            };
+          }
+          return {
+            name: 'Remote Docker daemon reachable',
+            pass: false,
+            message:
+              probe.detail ||
+              `Remote Docker daemon is not reachable (${user}@${host}).`,
+          };
+        })
+      );
+
+      checks.push(
+        await runCheck('Remote Docker permission', async () => {
+          const probe = await probeRemoteDockerPs(target);
+          if (!probe.sshOk) {
+            return {
+              name: 'Remote Docker permission',
+              pass: false,
+              message: formatRemoteDockerSshFailure(host, user),
+            };
+          }
+          if (probe.kind === 'permission') {
+            return {
+              name: 'Remote Docker permission',
+              pass: false,
+              message: formatRemoteDockerPermissionDenied(host, user),
+            };
+          }
+          if (probe.kind === 'ok') {
+            return {
+              name: 'Remote Docker permission',
+              pass: true,
+              message: `SSH user '${user}' can access the Docker daemon on ${host}`,
+            };
+          }
+          if (probe.kind === 'not-installed') {
+            return {
+              name: 'Remote Docker permission',
+              pass: false,
+              message: formatRemoteDockerNotInstalled(host, user),
+            };
+          }
+          return {
+            name: 'Remote Docker permission',
+            pass: false,
+            message:
+              probe.detail ||
+              `Cannot verify Docker permissions for '${user}' on ${host}.`,
+          };
+        })
+      );
+    } else {
+      checks.push(
+        await runCheck('Docker daemon', async () => {
+          try {
+            const provider = getDeploymentProvider('docker', config, envName);
+            await provider.testConnection();
+            return { name: 'Docker daemon', pass: true, message: 'Docker daemon reachable' };
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            return {
+              name: 'Docker daemon',
+              pass: false,
+              message: `Docker not reachable — ${msg}. Install Docker or set DOCKER_HOST for a remote daemon.`,
+            };
+          }
+        })
+      );
+    }
   }
 
   if (deployType === 'kubernetes') {
@@ -1142,7 +1270,9 @@ export function registerDoctorCommand(program) {
             const method = getEnvMethod(env);
             if (!method) continue;
             // Local/.env uses unprefixed names; prefixed CI names are checked separately below.
-            required.push(...getDeploymentSecretKeys(method, config));
+            required.push(
+              ...getDeploymentSecretKeys(method, config, getEnvSettings(env))
+            );
           }
 
           const unique = [...new Set(required)];
@@ -1179,7 +1309,7 @@ export function registerDoctorCommand(program) {
             config,
             config.environments
           );
-          const baseKeys = getDeploymentSecretKeys(method, config);
+          const baseKeys = getDeploymentSecretKeys(method, config, getEnvSettings(env));
 
           for (let i = 0; i < baseKeys.length; i++) {
             const base = baseKeys[i];

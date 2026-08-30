@@ -161,6 +161,7 @@ function buildNonInteractiveDeployAnswers(
       dockerRegistryUsername: '',
       dockerRegistryToken: '',
       dockerHost: '',
+      remoteMode: 'local',
       healthUrl: '',
     };
   }
@@ -307,7 +308,7 @@ async function promptKubernetesDeployment(base, projectName, projectType, option
  * @param {'frontend'|'backend'|'both'} projectType
  */
 async function promptDockerDeployment(base, projectName, projectType) {
-  const dockerAnswers = await inquirer.prompt([
+  const imageAnswers = await inquirer.prompt([
     {
       type: 'input',
       name: 'dockerImageName',
@@ -329,11 +330,81 @@ async function promptDockerDeployment(base, projectName, projectType) {
       name: 'dockerRegistryToken',
       message: 'Registry token/password (only if using a private registry):',
     },
+  ]);
+
+  const { remoteMode } = await inquirer.prompt([
     {
-      type: 'input',
-      name: 'dockerHost',
-      message: 'Remote Docker host (optional, e.g. ssh://ubuntu@203.0.113.10):',
+      type: 'list',
+      name: 'remoteMode',
+      message: 'Where should the container run?',
+      choices: [
+        { name: 'Locally (this machine or CI runner)', value: 'local' },
+        {
+          name: 'Remote Linux server via SSH (recommended for production)',
+          value: 'ssh',
+        },
+        {
+          name: 'Advanced: raw Docker host URI (tcp://, custom SSH setup)',
+          value: 'raw',
+        },
+      ],
+      default: 'local',
     },
+  ]);
+
+  /** @type {Record<string, string>} */
+  let sshAnswers = {};
+  /** @type {Record<string, string>} */
+  let rawAnswers = {};
+
+  if (remoteMode === 'ssh') {
+    sshAnswers = await inquirer.prompt([
+      {
+        type: 'input',
+        name: 'host',
+        message: 'Remote server host/IP:',
+      },
+      {
+        type: 'input',
+        name: 'user',
+        message: 'SSH username:',
+      },
+      {
+        type: 'input',
+        name: 'keyPath',
+        message: 'Path to SSH private key:',
+      },
+    ]);
+
+    await runSshInitValidation({
+      host: sshAnswers.host,
+      user: sshAnswers.user,
+      keyPath: sshAnswers.keyPath,
+      sshPort: 22,
+      deployType: getDeployTypeLabel('docker'),
+    });
+  }
+
+  if (remoteMode === 'raw') {
+    console.log(
+      chalk.gray(
+        '\n  Note: this mode uses Docker\'s native ssh://tcp:// transport and\n' +
+          '  depends on your local machine\'s own SSH/TLS configuration —\n' +
+          '  DeployHub cannot validate this connection ahead of time. Prefer\n' +
+          '  "Remote Linux server via SSH" above unless you have a specific\n' +
+          '  reason to use this.\n'
+      )
+    );
+    rawAnswers = await inquirer.prompt([
+      {
+        type: 'input',
+        name: 'dockerHost',
+        message: 'Remote Docker host (optional, e.g. ssh://ubuntu@203.0.113.10):',
+      },
+    ]);
+  }
+
+  const { healthUrl } = await inquirer.prompt([
     {
       type: 'input',
       name: 'healthUrl',
@@ -341,7 +412,14 @@ async function promptDockerDeployment(base, projectName, projectType) {
     },
   ]);
 
-  return { ...base, ...dockerAnswers };
+  return {
+    ...base,
+    ...imageAnswers,
+    remoteMode,
+    ...sshAnswers,
+    dockerHost: rawAnswers.dockerHost || '',
+    healthUrl,
+  };
 }
 
 /**
@@ -563,7 +641,17 @@ export function buildServerEnvEntry(
   if (deployAnswers.deployType === 'docker') {
     settings.dockerImageName = deployAnswers.dockerImageName || projectName;
     settings.dockerRegistryUrl = deployAnswers.dockerRegistryUrl || '';
-    settings.dockerHost = deployAnswers.dockerHost || '';
+    const remoteMode =
+      deployAnswers.remoteMode || (deployAnswers.dockerHost ? 'raw' : 'local');
+    settings.remote = { mode: remoteMode };
+    // Raw URI stays in config (existing DOCKER_HOST overlay). SSH key path is
+    // env-only. Host/user are non-secret settings (same as ec2) so doctor and
+    // .env.example can resolve them without writing the private key path here.
+    settings.dockerHost = remoteMode === 'raw' ? deployAnswers.dockerHost || '' : '';
+    if (remoteMode === 'ssh') {
+      if (deployAnswers.host) settings.host = deployAnswers.host;
+      if (deployAnswers.user) settings.user = deployAnswers.user;
+    }
     return {
       enabled: true,
       method: 'docker',
@@ -679,6 +767,12 @@ export function getDockerEnvSecrets(deployAnswers) {
   }
   if (deployAnswers.dockerRegistryToken) {
     vars.DOCKER_REGISTRY_TOKEN = deployAnswers.dockerRegistryToken;
+  }
+  if (deployAnswers.deployType === 'docker' && deployAnswers.remoteMode === 'ssh') {
+    if (deployAnswers.keyPath) vars.SSH_KEY_PATH = deployAnswers.keyPath;
+  }
+  if (deployAnswers.deployType === 'docker' && deployAnswers.remoteMode === 'raw') {
+    if (deployAnswers.dockerHost) vars.DOCKER_HOST = deployAnswers.dockerHost;
   }
   return Object.keys(vars).length > 0 ? vars : null;
 }

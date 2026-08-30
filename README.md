@@ -855,7 +855,7 @@ DeployHub detects whether the server uses Debian-style `sites-available` or RHEL
 1. Set `DOCKER_IMAGE_NAME` in `.env` (e.g. `myuser/myapp` for Docker Hub)
 2. For private registries (or any push): set `DOCKER_REGISTRY_USERNAME` and `DOCKER_REGISTRY_TOKEN`
 3. Leave `DOCKER_IMAGE_TAG` unset for a unique tag each build — set it only if you intentionally want a fixed tag
-4. For remote Docker: set `DOCKER_HOST` (e.g. `ssh://ubuntu@203.0.113.10`)
+4. For a remote Linux host, choose **Remote Linux server via SSH** at init (`remote.mode: "ssh"`) and set `SSH_HOST`, `SSH_USER`, `SSH_KEY_PATH` — DeployHub runs `docker pull`/`run` over node-ssh. Use `DOCKER_HOST` only for the advanced raw CLI transport (`tcp://` or a custom `ssh://` setup you already manage)
 5. Run `deployhub doctor`, then `git push origin main`
 
 | Variable | Description | Example | Where to get it |
@@ -865,7 +865,8 @@ DeployHub detects whether the server uses Debian-style `sites-available` or RHEL
 | `DOCKER_REGISTRY_URL` | Registry URL (optional) | `https://ghcr.io` | Registry docs |
 | `DOCKER_REGISTRY_USERNAME` | Registry user | `myuser` | Registry account |
 | `DOCKER_REGISTRY_TOKEN` | Registry password/token | *(secret)* | Docker Hub / GHCR PAT |
-| `DOCKER_HOST` | Remote daemon (optional) | `ssh://ubuntu@host` | Remote Docker setup |
+| `DOCKER_HOST` | Advanced raw daemon URI (optional) | `tcp://host:2376` | Only if you manage TLS/ssh:// yourself |
+| `SSH_HOST` / `SSH_USER` / `SSH_KEY_PATH` | Remote Linux via SSH (`remote.mode: ssh`) | `203.0.113.10` / `ubuntu` / `~/.ssh/key.pem` | Same names as EC2 |
 
 ### AWS EC2
 

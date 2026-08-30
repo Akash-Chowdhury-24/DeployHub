@@ -21,6 +21,7 @@ import {
   getEnvTrigger,
   getEnabledEnvironmentNames,
   isEnvEnabled,
+  getEnvSettings,
 } from '../core/environments.js';
 import { resolvePhpVersion } from './php-version.js';
 
@@ -540,7 +541,11 @@ export function buildWorkflowEnvEntries(
 
     const method = getEnvMethod(env);
     if (!method) continue;
-    const unprefixedKeys = getDeploymentWorkflowSecretKeys(method, config);
+    const unprefixedKeys = getDeploymentWorkflowSecretKeys(
+      method,
+      config,
+      getEnvSettings(env)
+    );
     for (const key of unprefixedKeys) {
       const secretName = envUsesPrefixedSecrets(envName, cfg)
         ? prefixSecretKey(envName, key)

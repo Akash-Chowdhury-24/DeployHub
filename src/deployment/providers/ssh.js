@@ -1,9 +1,7 @@
-import { NodeSSH } from 'node-ssh';
-import fs from 'fs-extra';
 import path from 'path';
-import os from 'os';
 import { createLogger } from '../../logger/index.js';
 import { getEnvSettings } from '../../core/config.js';
+import { createSshExecSession } from '../ssh-connection.js';
 import {
   getNginxSitesAvailablePath,
   getNginxSitesEnabledPath,
@@ -11,7 +9,7 @@ import {
   resolveNginxSiteName,
 } from '../../utils/nginx.js';
 import { resolvePm2AppName } from '../../utils/pm2-app-name.js';
-import { shellQuote, formatRemoteCommandFailure } from '../../utils/shell-quote.js';
+import { shellQuote } from '../../utils/shell-quote.js';
 import { extractGunicornTarget } from '../../utils/python-app-target.js';
 import { resolvePhpVersion } from '../../utils/php-version.js';
 import {
@@ -64,93 +62,20 @@ export function createSshProvider(config, envName, env = process.env) {
 
   const log = createLogger('ssh');
 
-  // Defense-in-depth: never let a stuck SSH channel hang CI indefinitely.
-  // Override with DEPLOYHUB_SSH_EXEC_TIMEOUT_MS (ms). Backend start/stop uses a shorter bound.
-  const defaultExecTimeoutMs = Number(env.DEPLOYHUB_SSH_EXEC_TIMEOUT_MS) || 120_000;
+  const session = createSshExecSession({
+    host,
+    user,
+    keyPath,
+    sshKey,
+    sshPort,
+    env,
+    log,
+  });
+  const { connect, exec, defaultExecTimeoutMs } = session;
   const startStopTimeoutMs = Math.min(
     defaultExecTimeoutMs,
     Number(env.DEPLOYHUB_SSH_START_TIMEOUT_MS) || 60_000
   );
-
-  async function connect() {
-    if (!host || !user) {
-      throw new Error(
-        'SSH host and user are required. Set SSH_HOST and SSH_USER in .env (see .env.example comments).'
-      );
-    }
-
-    if (!sshKey && !keyPath) {
-      throw new Error(
-        'SSH authentication required. Set SSH_KEY_PATH (local) or SSH_KEY (CI secret) in .env — see .env.example.'
-      );
-    }
-
-    const ssh = new NodeSSH();
-    /** @type {import('node-ssh').SSHConnectOptions} */
-    const connectOpts = { host, username: user, port: sshPort };
-
-    if (sshKey) {
-      const tmpKeyPath = path.join(os.tmpdir(), 'deployhub-ssh-key');
-      await fs.writeFile(tmpKeyPath, sshKey, { mode: 0o600 });
-      connectOpts.privateKeyPath = tmpKeyPath;
-    } else if (keyPath) {
-      const expanded = keyPath.replace(/^~/, os.homedir());
-      connectOpts.privateKeyPath = path.resolve(expanded);
-    }
-
-    try {
-      await ssh.connect(connectOpts);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      throw new Error(
-        `SSH connection failed to ${user}@${host}:${sshPort} — ${msg}. Check SSH_HOST, SSH_USER, SSH_KEY_PATH, and that port ${sshPort} is open in your firewall/security group.`
-      );
-    }
-    return ssh;
-  }
-
-  /**
-   * @param {import('node-ssh').NodeSSH} ssh
-   * @param {string} command
-   * @param {{ timeoutMs?: number }} [opts]
-   */
-  async function exec(ssh, command, opts = {}) {
-    const timeoutMs = opts.timeoutMs ?? defaultExecTimeoutMs;
-    log.info(`$ ${command}`);
-
-    /** @type {ReturnType<typeof setTimeout> | undefined} */
-    let timer;
-    const timeoutPromise = new Promise((_, reject) => {
-      timer = setTimeout(() => {
-        reject(
-          new Error(
-            `SSH command timed out after ${timeoutMs}ms on ${user}@${host}. ` +
-              `The remote command may still be running — check the server. ` +
-              `Command: ${command.length > 240 ? `${command.slice(0, 240)}…` : command}`
-          )
-        );
-      }, timeoutMs);
-    });
-
-    let result;
-    try {
-      result = await Promise.race([ssh.execCommand(command), timeoutPromise]);
-    } finally {
-      if (timer) clearTimeout(timer);
-    }
-
-    if (result.code !== 0 && result.code !== null) {
-      const message = formatRemoteCommandFailure(
-        command,
-        result.code,
-        result.stderr,
-        result.stdout
-      );
-      log.error(message);
-      throw new Error(message);
-    }
-    return result;
-  }
 
   /**
    * Exact marker match in a null-delimited /proc file (cmdline or environ).

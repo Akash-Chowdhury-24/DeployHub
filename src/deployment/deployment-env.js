@@ -3,6 +3,9 @@
  * and post-init next steps.
  */
 
+import { getEnvSettings } from '../core/environments.js';
+import { resolveDockerRemoteMode } from '../utils/docker-remote-mode.js';
+
 /** @typedef {{ key: string, comment: string[], example?: string, default?: string, optionalReason?: string, when?: 'backend'|'optional'|'ci' }} EnvVarDef */
 
 /** @type {Record<string, EnvVarDef[]>} */
@@ -131,10 +134,12 @@ export const DEPLOYMENT_ENV_DEFS = {
     },
     {
       key: 'DOCKER_HOST',
-      optionalReason: 'only required when deploying to a remote Docker daemon instead of local Docker',
+      optionalReason:
+        'only for advanced raw Docker CLI transport (tcp:// or custom ssh://). Prefer remote.mode "ssh" (SSH_HOST / SSH_USER / SSH_KEY_PATH) for a remote Linux box',
       comment: [
-        'Remote Docker daemon address.',
-        'Examples: ssh://ubuntu@203.0.113.10 | tcp://203.0.113.10:2376',
+        'Advanced/escape-hatch: raw Docker daemon URI. DeployHub cannot validate ssh:// via doctor.',
+        'Prefer "Remote Linux server via SSH" at init (remote.mode: ssh) unless you manage TLS/ssh:// yourself.',
+        'Examples: tcp://203.0.113.10:2376 | ssh://ubuntu@203.0.113.10',
       ],
       when: 'optional',
     },
@@ -394,6 +399,56 @@ export const DEPLOYMENT_ENV_KEYS = Object.fromEntries(
   ])
 );
 
+const DOCKER_HOST_KEYS = new Set(['DOCKER_HOST', 'DOCKER_TLS_VERIFY', 'DOCKER_CERT_PATH']);
+
+/**
+ * SSH identity vars used when docker `remote.mode === "ssh"`.
+ * Same names as ec2; per-env secret prefixing separates a sibling ssh/ec2 env.
+ * Not listed in static DEPLOYMENT_ENV_KEYS.docker (local/raw docker do not read them).
+ */
+export const DOCKER_SSH_ENV_VARS = [
+  ...SSH_BASE_ENV_VARS.filter((d) => d.key !== 'SSH_DEPLOY_PATH'),
+  ...SSH_CI_ENV_VARS,
+];
+
+/**
+ * @param {Record<string, unknown>|null|undefined} settings
+ * @returns {boolean}
+ */
+function dockerHasExplicitRemoteMode(settings) {
+  const remote = settings && /** @type {Record<string, unknown>} */ (settings).remote;
+  const mode =
+    remote && typeof remote === 'object'
+      ? /** @type {Record<string, unknown>} */ (remote).mode
+      : undefined;
+  return mode === 'ssh' || mode === 'local' || mode === 'raw';
+}
+
+/**
+ * Per-env docker defs: ssh mode adds SSH_* and drops raw DOCKER_HOST;
+ * explicit local drops DOCKER_HOST; configs with no remote.mode keep legacy defs.
+ *
+ * @param {string} deployType
+ * @param {Record<string, unknown>|null} [settings]
+ * @returns {EnvVarDef[]}
+ */
+export function getMethodEnvDefs(deployType, settings = null) {
+  const defs = DEPLOYMENT_ENV_DEFS[deployType] || [];
+  if (deployType !== 'docker') return defs;
+  const s = settings || {};
+  if (!dockerHasExplicitRemoteMode(s)) {
+    return defs;
+  }
+  const mode = resolveDockerRemoteMode(s, {});
+  if (mode === 'ssh') {
+    return [...defs.filter((d) => !DOCKER_HOST_KEYS.has(d.key)), ...DOCKER_SSH_ENV_VARS];
+  }
+  if (mode === 'local') {
+    return defs.filter((d) => !DOCKER_HOST_KEYS.has(d.key));
+  }
+  return defs;
+}
+
 /**
  * Deployment-side cloud-API lookup credentials — distinct from storage-provider
  * env vars (storage stays project-wide / unprefixed).
@@ -422,8 +477,8 @@ export const DEPLOYMENT_LOOKUP_ENV_KEYS = new Set([
  * @param {import('../core/config.js').DeployHubConfig} [config]
  * @returns {string[]}
  */
-export function getDeploymentEnvKeys(deployType, config = null) {
-  const defs = DEPLOYMENT_ENV_DEFS[deployType] || [];
+export function getDeploymentEnvKeys(deployType, config = null, settings = null) {
+  const defs = getMethodEnvDefs(deployType, settings);
   const projectType = config?.projectType || 'frontend';
   const isBackend = projectType === 'backend' || projectType === 'both';
 
@@ -452,8 +507,8 @@ function toGithubSecretKey(key) {
  * @param {import('../core/config.js').DeployHubConfig} [config]
  * @returns {string[]}
  */
-export function getDeploymentSecretKeys(deployType, config = null) {
-  const defs = DEPLOYMENT_ENV_DEFS[deployType] || [];
+export function getDeploymentSecretKeys(deployType, config = null, settings = null) {
+  const defs = getMethodEnvDefs(deployType, settings);
   const projectType = config?.projectType || 'frontend';
   const isBackend = projectType === 'backend' || projectType === 'both';
 
@@ -477,8 +532,8 @@ export function getDeploymentSecretKeys(deployType, config = null) {
  * @param {import('../core/config.js').DeployHubConfig} [config]
  * @returns {string[]}
  */
-export function getDeploymentWorkflowSecretKeys(deployType, config = null) {
-  const defs = DEPLOYMENT_ENV_DEFS[deployType] || [];
+export function getDeploymentWorkflowSecretKeys(deployType, config = null, settings = null) {
+  const defs = getMethodEnvDefs(deployType, settings);
   const projectType = config?.projectType || 'frontend';
   const isBackend = projectType === 'backend' || projectType === 'both';
 
@@ -503,8 +558,8 @@ export function getDeploymentWorkflowSecretKeys(deployType, config = null) {
  * @param {import('../core/config.js').DeployHubConfig} [config]
  * @returns {SecretChecklistItem[]}
  */
-export function getDeploymentSecretChecklistItems(deployType, config = null) {
-  const defs = DEPLOYMENT_ENV_DEFS[deployType] || [];
+export function getDeploymentSecretChecklistItems(deployType, config = null, settings = null) {
+  const defs = getMethodEnvDefs(deployType, settings);
   const projectType = config?.projectType || 'frontend';
   const isBackend = projectType === 'backend' || projectType === 'both';
 
@@ -651,7 +706,11 @@ export function applyEnvSecretOverlay(envName, config, env = process.env) {
     null;
   if (!method) return out;
 
-  const keys = getDeploymentWorkflowSecretKeys(method, /** @type {any} */ (config));
+  const keys = getDeploymentWorkflowSecretKeys(
+    method,
+    /** @type {any} */ (config),
+    getEnvSettings(entry)
+  );
   for (const key of keys) {
     const prefixed = prefixSecretKey(envName, key);
     if (out[prefixed]) {
@@ -680,10 +739,12 @@ export function getDeploymentWorkflowSecretKeysForEnv(
   config = null,
   environments = null
 ) {
-  const keys = getDeploymentWorkflowSecretKeys(deployType, config);
+  const envs = environments || config?.environments || {};
+  const settings = getEnvSettings(envs[envName]);
+  const keys = getDeploymentWorkflowSecretKeys(deployType, config, settings);
   const cfg = {
     ...(config || {}),
-    environments: environments || config?.environments || {},
+    environments: envs,
   };
   if (!envUsesPrefixedSecrets(envName, cfg)) {
     return keys;
@@ -705,7 +766,9 @@ export function getDeploymentSecretChecklistItemsForEnv(
   config = null,
   environments = null
 ) {
-  const items = getDeploymentSecretChecklistItems(deployType, config);
+  const envs = environments || config?.environments || {};
+  const settings = getEnvSettings(envs[envName]);
+  const items = getDeploymentSecretChecklistItems(deployType, config, settings);
   const cfg = {
     ...(config || {}),
     environments: environments || config?.environments || {},
@@ -736,10 +799,12 @@ export function getDeploymentSecretKeysForEnv(
   config = null,
   environments = null
 ) {
-  const keys = getDeploymentSecretKeys(deployType, config);
+  const envs = environments || config?.environments || {};
+  const settings = getEnvSettings(envs[envName]);
+  const keys = getDeploymentSecretKeys(deployType, config, settings);
   const cfg = {
     ...(config || {}),
-    environments: environments || config?.environments || {},
+    environments: envs,
   };
   if (!envUsesPrefixedSecrets(envName, cfg)) {
     return keys;
@@ -786,7 +851,6 @@ export function generateDeploymentEnvSection(
   environments = {},
   options = {}
 ) {
-  const defs = DEPLOYMENT_ENV_DEFS[deployType] || [];
   const projectType = config?.projectType || 'frontend';
   const isBackend = projectType === 'backend' || projectType === 'both';
   const envName = options.envName;
@@ -819,7 +883,7 @@ export function generateDeploymentEnvSection(
       ? /** @type {Record<string, unknown>} */ (envEntry.config)
       : envEntry;
 
-  for (const d of defs) {
+  for (const d of getMethodEnvDefs(deployType, settings)) {
     if (d.when === 'backend' && !isBackend) continue;
 
     const isOptional = d.when === 'optional' || d.when === 'ci';
@@ -907,23 +971,25 @@ export const DEPLOYMENT_GUIDE = {
   },
   docker: {
     before: [
-      'Docker installed locally (docker --version works).',
-      'If deploying to a remote host: Docker installed on that host and reachable.',
+      'Docker installed locally (docker --version works) — used to build/push images.',
+      'For remote Linux via SSH: Docker installed on that host and the SSH user in the docker group.',
       'A Dockerfile or docker-compose.yml in your project (or enable pipeline.docker).',
       'Registry account if pushing to a private registry (Docker Hub, GHCR, etc.).',
     ],
     automates: [
       'Generates config, workflow, and .env.example for registry and image settings.',
       'Generates a starter Dockerfile and .dockerignore when missing.',
-      'Tests Docker daemon connectivity during init.',
+      'Offers local Docker, first-class remote SSH (node-ssh), or advanced raw DOCKER_HOST.',
+      'Validates SSH key and host when remote.mode is ssh; tests the local daemon otherwise.',
       'Builds the image once during the pipeline docker stage, then reuses it on deploy.',
     ],
     after: [
       'Copy .env.example to .env and set DOCKER_IMAGE_NAME (required — e.g. myuser/myapp).',
-      'Optional in .env: DOCKER_IMAGE_TAG, DOCKER_REGISTRY_URL, DOCKER_HOST, DOCKER_TLS_VERIFY, DOCKER_CERT_PATH.',
+      'Remote Linux via SSH: also set SSH_HOST, SSH_USER, SSH_KEY_PATH (same names as EC2).',
+      'Advanced raw URI only: DOCKER_HOST, and DOCKER_TLS_VERIFY / DOCKER_CERT_PATH for tcp:// TLS.',
       'If using a private registry: also set DOCKER_REGISTRY_USERNAME and DOCKER_REGISTRY_TOKEN.',
       'Add the GitHub Secrets listed below (Settings → Secrets and variables → Actions). Local .env is NOT used by GitHub Actions — doctor only checks your machine.',
-      'Run deployhub doctor to verify Docker is reachable.',
+      'Run deployhub doctor to verify Docker (and SSH, when remote.mode is ssh).',
       'git push origin main to trigger your first deployment.',
     ],
   },

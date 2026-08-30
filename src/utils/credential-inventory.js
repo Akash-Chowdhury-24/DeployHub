@@ -198,6 +198,16 @@ export const SHARED_BY_DESIGN_DEPLOY_PAIRS = [
 ];
 
 /**
+ * When docker `remote.mode === "ssh"`, the docker method also reads SSH_HOST,
+ * SSH_USER, SSH_KEY_PATH, SSH_SSH_PORT, and SSH_KEY at runtime — the same
+ * names as ssh/ec2/azure-vm/gcp-vm. Those keys are NOT in static
+ * DEPLOYMENT_ENV_KEYS.docker (local and raw docker do not use them), so they
+ * do not appear in the storage×deploy matrix. Per-environment secret prefixing
+ * already separates a docker-ssh env from a sibling ssh/ec2 env on the same
+ * config. Do not invent DOCKER_SSH_* aliases unless prefixing cannot apply.
+ */
+
+/**
  * @param {string[]} a
  * @param {string[]} b
  * @returns {string[]}

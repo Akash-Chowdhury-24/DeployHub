@@ -29,6 +29,10 @@ export function createDockerImageDeployContext(config, env = process.env, log) {
   const registryUrl = env.DOCKER_REGISTRY_URL || '';
   const registryUser = env.DOCKER_REGISTRY_USERNAME || '';
   const registryToken = env.DOCKER_REGISTRY_TOKEN || '';
+  // DOCKER_HOST here is only the raw CLI transport (tcp:// / ssh://).
+  // docker remote.mode "ssh" is resolved in docker.js and must not be injected
+  // into this shared helper — kubernetes.js uses the same context for build/push
+  // and has no remote SSH docker host.
   const dockerHost = env.DOCKER_HOST || '';
 
   if (tagSource === 'explicit') {

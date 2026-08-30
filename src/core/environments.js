@@ -267,6 +267,22 @@ export function resolveEnvTargets(config, envFlag) {
 }
 
 /**
+ * Whitelist of method-config fields copied onto process env for Docker and
+ * Kubernetes providers. Structural (not a per-method if): only these keys are
+ * ever copied. `remote` / `host` / `user` / `keyPath` are intentionally absent
+ * — docker SSH identity is read by docker.js from settings + SSH_* env vars.
+ * Kubernetes uses this same helper and therefore cannot observe remote.mode.
+ */
+export const METHOD_SETTINGS_ENV_OVERLAY = Object.freeze({
+  dockerImageName: 'DOCKER_IMAGE_NAME',
+  dockerRegistryUrl: 'DOCKER_REGISTRY_URL',
+  dockerHost: 'DOCKER_HOST',
+  kubeNamespace: 'KUBE_NAMESPACE',
+  kubeconfig: 'KUBECONFIG',
+  kubeContext: 'KUBE_CONTEXT',
+});
+
+/**
  * Overlay method-specific config onto process env for Docker/K8s providers.
  * Secrets still come from real env vars; non-secret names/paths come from config.
  *
@@ -277,12 +293,10 @@ export function resolveEnvTargets(config, envFlag) {
 export function mergeMethodSettingsIntoEnv(env, settings) {
   /** @type {Record<string, string|undefined>} */
   const out = { ...env };
-  if (settings.dockerImageName) out.DOCKER_IMAGE_NAME = String(settings.dockerImageName);
-  if (settings.dockerRegistryUrl) out.DOCKER_REGISTRY_URL = String(settings.dockerRegistryUrl);
-  if (settings.dockerHost) out.DOCKER_HOST = String(settings.dockerHost);
-  if (settings.kubeNamespace) out.KUBE_NAMESPACE = String(settings.kubeNamespace);
-  if (settings.kubeconfig) out.KUBECONFIG = String(settings.kubeconfig);
-  if (settings.kubeContext) out.KUBE_CONTEXT = String(settings.kubeContext);
+  for (const [settingKey, envKey] of Object.entries(METHOD_SETTINGS_ENV_OVERLAY)) {
+    const value = settings[settingKey];
+    if (value) out[envKey] = String(value);
+  }
   return out;
 }
 
@@ -302,4 +316,5 @@ export default {
   buildEnvironmentEntry,
   resolveEnvTargets,
   mergeMethodSettingsIntoEnv,
+  METHOD_SETTINGS_ENV_OVERLAY,
 };
