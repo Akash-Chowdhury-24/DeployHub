@@ -22,6 +22,8 @@ import {
   getEnabledEnvironmentNames,
   isEnvEnabled,
   getEnvSettings,
+  getWorkflowPushBranches,
+  formatBranchMappingSummary,
 } from '../core/environments.js';
 import { resolvePhpVersion } from './php-version.js';
 
@@ -574,6 +576,33 @@ function formatEnvironmentChoiceOptions(environments) {
 }
 
 /**
+ * YAML token for a git branch in `on.push.branches`.
+ * Unquoted when the name is a simple identifier; JSON-quoted otherwise.
+ *
+ * @param {string} branch
+ * @returns {string}
+ */
+function formatYamlBranchToken(branch) {
+  if (/^[A-Za-z0-9._-]+$/.test(branch)) return branch;
+  return JSON.stringify(branch);
+}
+
+/**
+ * `on.push` block listing exactly the mapped trigger branches — or omitted
+ * when mapping mode has no enabled push environments (dispatch-only).
+ *
+ * @param {string[]} branches
+ * @returns {string}
+ */
+export function formatPushTriggerYaml(branches) {
+  if (!branches || branches.length === 0) return '';
+  const list = branches.map(formatYamlBranchToken).join(', ');
+  return `  push:
+    branches: [${list}]
+`;
+}
+
+/**
  * @param {Set<string>} envVars
  * @param {string} [indent]
  */
@@ -678,6 +707,9 @@ export function generateWorkflowYaml(
 
   const envChoiceOptions = formatEnvironmentChoiceOptions(environments);
   const hasEnvs = envNames.length > 0;
+  const cfgForBranches = { ...(config || {}), environments };
+  const pushBranches = getWorkflowPushBranches(cfgForBranches);
+  const pushTriggerYaml = formatPushTriggerYaml(pushBranches);
   const dispatchInputs = hasEnvs
     ? `  workflow_dispatch:
     inputs:
@@ -708,9 +740,7 @@ ${envBlock}
 
   const workflow = `${getWorkflowHeaderComment()}name: DeployHub
 on:
-  push:
-    branches: [main]
-${dispatchInputs}jobs:
+${pushTriggerYaml}${dispatchInputs}jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
@@ -1036,13 +1066,17 @@ export function expectedWorkflowSecretKeysFromConfig(config, kind = 'rollback') 
  * @param {string} yamlText
  * @param {import('../core/config.js').DeployHubConfig} config
  * @param {string} [filename]
- * @returns {{ drifted: boolean, missingEnvs: string[], missingSecrets: string[], summary: string }}
+ * @returns {{ drifted: boolean, missingEnvs: string[], missingSecrets: string[], missingBranches: string[], extraBranches: string[], summary: string }}
  */
 export function detectWorkflowConfigDrift(yamlText, config, filename = DEPLOY_WORKFLOW_FILENAME) {
   /** @type {string[]} */
   const missingEnvs = [];
   /** @type {string[]} */
   const missingSecrets = [];
+  /** @type {string[]} */
+  const missingBranches = [];
+  /** @type {string[]} */
+  const extraBranches = [];
 
   let parsed;
   try {
@@ -1052,12 +1086,21 @@ export function detectWorkflowConfigDrift(yamlText, config, filename = DEPLOY_WO
       drifted: false,
       missingEnvs,
       missingSecrets,
+      missingBranches,
+      extraBranches,
       summary: '',
     };
   }
 
   if (!parsed || typeof parsed !== 'object') {
-    return { drifted: false, missingEnvs, missingSecrets, summary: '' };
+    return {
+      drifted: false,
+      missingEnvs,
+      missingSecrets,
+      missingBranches,
+      extraBranches,
+      summary: '',
+    };
   }
 
   const envNames = getEnabledEnvironmentNames(config);
@@ -1081,7 +1124,30 @@ export function detectWorkflowConfigDrift(yamlText, config, filename = DEPLOY_WO
     if (!fileSecrets.has(key)) missingSecrets.push(key);
   }
 
-  const drifted = missingEnvs.length > 0 || missingSecrets.length > 0;
+  if (kind === 'deploy') {
+    const expectedBranches = getWorkflowPushBranches(config);
+    const actualRaw = root?.on?.push?.branches;
+    /** @type {string[]} */
+    const actualBranches = Array.isArray(actualRaw)
+      ? actualRaw.map(String)
+      : typeof actualRaw === 'string'
+        ? [actualRaw]
+        : [];
+    const actualSet = new Set(actualBranches);
+    const expectedSet = new Set(expectedBranches);
+    for (const b of expectedBranches) {
+      if (!actualSet.has(b)) missingBranches.push(b);
+    }
+    for (const b of actualBranches) {
+      if (!expectedSet.has(b)) extraBranches.push(b);
+    }
+  }
+
+  const drifted =
+    missingEnvs.length > 0 ||
+    missingSecrets.length > 0 ||
+    missingBranches.length > 0 ||
+    extraBranches.length > 0;
   /** @type {string[]} */
   const parts = [];
   if (missingEnvs.length > 0) {
@@ -1095,11 +1161,23 @@ export function detectWorkflowConfigDrift(yamlText, config, filename = DEPLOY_WO
       `missing secret(s): ${shown.join(', ')}${missingSecrets.length > 4 ? ', …' : ''}`
     );
   }
+  if (missingBranches.length > 0 || extraBranches.length > 0) {
+    const bits = [];
+    if (missingBranches.length > 0) {
+      bits.push(`missing ${missingBranches.map((b) => `"${b}"`).join(', ')}`);
+    }
+    if (extraBranches.length > 0) {
+      bits.push(`extra ${extraBranches.map((b) => `"${b}"`).join(', ')}`);
+    }
+    parts.push(`${bits.join('; ')} in on.push.branches`);
+  }
 
   return {
     drifted,
     missingEnvs,
     missingSecrets,
+    missingBranches,
+    extraBranches,
     summary: parts.join('; '),
   };
 }
@@ -1146,6 +1224,24 @@ export async function getWorkflowDriftDoctorChecks(cwd, config) {
   }
 
   return checks;
+}
+
+/**
+ * Doctor helper: informational line listing which branches invoke the workflow.
+ * Always pass: true — same pattern as workflow-drift (never blocks doctor exit).
+ *
+ * @param {import('../core/config.js').DeployHubConfig} config
+ * @returns {{ name: string, pass: boolean, message: string } | null}
+ */
+export function getBranchMappingDoctorCheck(config) {
+  const envCount = Object.keys(config.environments || {}).length;
+  if (envCount === 0) return null;
+  const branches = getWorkflowPushBranches(config);
+  return {
+    name: 'Branch mapping',
+    pass: true,
+    message: formatBranchMappingSummary(branches).replace(/\n/g, ' '),
+  };
 }
 
 /**

@@ -71,3 +71,107 @@ describe('trigger still gates deploy targets (separate from secret injection)', 
     expect(targets).not.toContain('production');
   });
 });
+
+describe('per-environment branch mapping gates push deploy targets', () => {
+  const environments = {
+    production: {
+      enabled: true,
+      method: 'ec2',
+      trigger: 'push',
+      branch: 'main',
+      config: { host: 'prod.example.com' },
+    },
+    staging: {
+      enabled: true,
+      method: 'ec2',
+      trigger: 'push',
+      branch: 'dev',
+      config: { host: 'stg.example.com' },
+    },
+  };
+
+  const config = {
+    project: 'demo',
+    projectType: 'frontend',
+    defaultEnvironment: 'production',
+    unprefixedSecretEnvironment: 'production',
+    environments,
+    pipeline: { deploy: true },
+  };
+
+  test('GHA push on dev resolves only staging', () => {
+    expect(
+      pipelineDeployTargets(config, {
+        GITHUB_ACTIONS: 'true',
+        GITHUB_EVENT_NAME: 'push',
+        GITHUB_REF: 'refs/heads/dev',
+      })
+    ).toEqual(['staging']);
+  });
+
+  test('GHA push on main resolves only production', () => {
+    expect(
+      pipelineDeployTargets(config, {
+        GITHUB_ACTIONS: 'true',
+        GITHUB_EVENT_NAME: 'push',
+        GITHUB_REF: 'refs/heads/main',
+      })
+    ).toEqual(['production']);
+  });
+
+  test('GHA push on unmapped branch resolves no environments', () => {
+    expect(
+      pipelineDeployTargets(config, {
+        GITHUB_ACTIONS: 'true',
+        GITHUB_EVENT_NAME: 'push',
+        GITHUB_REF: 'refs/heads/akash',
+      })
+    ).toEqual([]);
+  });
+
+  test('two envs mapped to the same branch both deploy', () => {
+    const shared = {
+      ...config,
+      environments: {
+        production: { ...environments.production, branch: 'main' },
+        staging: { ...environments.staging, branch: 'main' },
+      },
+    };
+    expect(
+      pipelineDeployTargets(shared, {
+        GITHUB_ACTIONS: 'true',
+        GITHUB_EVENT_NAME: 'push',
+        GITHUB_REF: 'refs/heads/main',
+      })
+    ).toEqual(['production', 'staging']);
+  });
+
+  test('workflow_dispatch still targets none (explicit --env step handles it)', () => {
+    expect(
+      pipelineDeployTargets(config, {
+        GITHUB_ACTIONS: 'true',
+        GITHUB_EVENT_NAME: 'workflow_dispatch',
+        GITHUB_REF: 'refs/heads/dev',
+      })
+    ).toEqual([]);
+  });
+
+  test('configs with no branch field keep grandfathered all-push-envs behavior', () => {
+    const legacy = {
+      ...config,
+      environments: {
+        production: { ...environments.production, branch: undefined },
+        staging: { ...environments.staging, branch: undefined },
+      },
+    };
+    delete legacy.environments.production.branch;
+    delete legacy.environments.staging.branch;
+    expect(
+      pipelineDeployTargets(legacy, {
+        GITHUB_ACTIONS: 'true',
+        GITHUB_EVENT_NAME: 'push',
+        GITHUB_REF: 'refs/heads/akash',
+      })
+    ).toEqual(['production', 'staging']);
+  });
+});

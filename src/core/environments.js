@@ -140,6 +140,120 @@ export function getEnvTrigger(envEntry) {
 }
 
 /**
+ * Normalize a git branch name from config / prompts.
+ * Strips a leading `refs/heads/` if the user pasted a full ref.
+ *
+ * @param {unknown} input
+ * @returns {{ ok: true, name: string } | { ok: false, error: string }}
+ */
+export function normalizeGitBranchName(input) {
+  const trimmed = typeof input === 'string' ? input.trim() : '';
+  if (!trimmed) {
+    return { ok: false, error: 'Branch name cannot be empty.' };
+  }
+  const stripped = trimmed.replace(/^refs\/heads\//, '');
+  if (!stripped) {
+    return { ok: false, error: 'Branch name cannot be empty.' };
+  }
+  if (/\s/.test(stripped)) {
+    return { ok: false, error: 'Branch name cannot contain whitespace.' };
+  }
+  return { ok: true, name: stripped };
+}
+
+/**
+ * @param {unknown} envEntry
+ * @returns {string|null}
+ */
+export function getEnvBranch(envEntry) {
+  if (!envEntry || typeof envEntry !== 'object') return null;
+  const parsed = normalizeGitBranchName(
+    /** @type {Record<string, unknown>} */ (envEntry).branch
+  );
+  return parsed.ok ? parsed.name : null;
+}
+
+/**
+ * True when at least one environment has opted into `branch` mapping.
+ * Absence of every `branch` field = grandfathered main-only push trigger.
+ *
+ * @param {Record<string, unknown>} [config]
+ * @returns {boolean}
+ */
+export function configHasBranchMapping(config) {
+  const envs = /** @type {Record<string, unknown>} */ (config?.environments || {});
+  return Object.values(envs).some((entry) => getEnvBranch(entry) != null);
+}
+
+/**
+ * Current git branch for a GitHub Actions push run.
+ * Tags and missing refs return null (no environment matches).
+ *
+ * @param {Record<string, string|undefined>} [env]
+ * @returns {string|null}
+ */
+export function resolvePushBranchName(env = process.env) {
+  const ref = env.GITHUB_REF;
+  if (typeof ref === 'string' && ref.startsWith('refs/heads/')) {
+    return ref.slice('refs/heads/'.length) || null;
+  }
+  // Some harnesses set GITHUB_REF_NAME without GITHUB_REF.
+  if (typeof env.GITHUB_REF_NAME === 'string' && env.GITHUB_REF_NAME.trim()) {
+    if (typeof ref === 'string' && ref.startsWith('refs/tags/')) return null;
+    return env.GITHUB_REF_NAME.trim();
+  }
+  return null;
+}
+
+/**
+ * Unique `on.push.branches` list for the generated workflow.
+ *
+ * - No environment has `branch` → `['main']` (today's hardcoded trigger).
+ * - Otherwise: unique branches of enabled `trigger: push` environments
+ *   (an enabled push env without `branch` defaults to `main`).
+ *   `main` is listed first when present. Empty if nothing should auto-trigger.
+ *
+ * @param {Record<string, unknown>} [config]
+ * @returns {string[]}
+ */
+export function getWorkflowPushBranches(config) {
+  const envs = /** @type {Record<string, unknown>} */ (config?.environments || {});
+  if (!configHasBranchMapping(config || {})) {
+    return ['main'];
+  }
+
+  /** @type {string[]} */
+  const collected = [];
+  const seen = new Set();
+  for (const entry of Object.values(envs)) {
+    if (!isEnvEnabled(entry) || getEnvTrigger(entry) !== 'push') continue;
+    const branch = getEnvBranch(entry) || 'main';
+    if (seen.has(branch)) continue;
+    seen.add(branch);
+    collected.push(branch);
+  }
+
+  if (collected.includes('main')) {
+    return ['main', ...collected.filter((b) => b !== 'main')];
+  }
+  return collected;
+}
+
+/**
+ * Init / doctor copy. The second line makes the exclusion explicit.
+ *
+ * @param {string[]} branches
+ * @returns {string}
+ */
+export function formatBranchMappingSummary(branches) {
+  const list = branches.length > 0 ? branches.join(', ') : '(none)';
+  return [
+    `Branches mapped to an environment: ${list}`,
+    'Pushes to any other branch will not trigger DeployHub.',
+  ].join('\n');
+}
+
+/**
  * @param {Record<string, unknown>} config
  * @returns {string|null}
  */
@@ -196,7 +310,7 @@ export function getEnabledEnvironmentNames(config) {
  *
  * @param {string} method
  * @param {Record<string, unknown>} [settings]
- * @param {{ enabled?: boolean, trigger?: 'push'|'manual' }} [meta]
+ * @param {{ enabled?: boolean, trigger?: 'push'|'manual', branch?: string }} [meta]
  */
 export function buildEnvironmentEntry(method, settings = {}, meta = {}) {
   const cleaned = { ...settings };
@@ -204,11 +318,16 @@ export function buildEnvironmentEntry(method, settings = {}, meta = {}) {
   delete cleaned.method;
   delete cleaned.enabled;
   delete cleaned.trigger;
+  delete cleaned.branch;
   delete cleaned.config;
+  const trigger = meta.trigger === 'push' ? 'push' : 'manual';
+  const branchParsed =
+    trigger === 'push' && meta.branch != null ? normalizeGitBranchName(meta.branch) : null;
   return {
     enabled: meta.enabled !== false,
     method,
-    trigger: meta.trigger === 'push' ? 'push' : 'manual',
+    trigger,
+    ...(branchParsed?.ok ? { branch: branchParsed.name } : {}),
     config: cleaned,
   };
 }
@@ -311,6 +430,12 @@ export default {
   getEnvSettings,
   isEnvEnabled,
   getEnvTrigger,
+  normalizeGitBranchName,
+  getEnvBranch,
+  configHasBranchMapping,
+  resolvePushBranchName,
+  getWorkflowPushBranches,
+  formatBranchMappingSummary,
   resolveDefaultEnvironmentName,
   getEnabledEnvironmentNames,
   buildEnvironmentEntry,

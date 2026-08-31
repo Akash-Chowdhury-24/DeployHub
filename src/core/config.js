@@ -15,6 +15,7 @@ import {
   buildEnvironmentEntry,
   resolveEnvTargets,
   mergeMethodSettingsIntoEnv,
+  normalizeGitBranchName,
 } from './environments.js';
 
 const SideConfigSchema = z.object({
@@ -83,6 +84,8 @@ const EnvironmentSchema = z.object({
   enabled: z.boolean().default(true),
   method: z.string(),
   trigger: z.enum(['push', 'manual']).default('manual'),
+  /** Git branch that auto-deploys this environment on push. Omitted = grandfathered main-only. */
+  branch: z.string().min(1).optional(),
   config: MethodConfigSchema.default({}),
 });
 
@@ -206,6 +209,7 @@ function extractMethodConfig(entry) {
       key === 'enabled' ||
       key === 'method' ||
       key === 'trigger' ||
+      key === 'branch' ||
       key === 'config' ||
       key === 'type'
     ) {
@@ -216,6 +220,16 @@ function extractMethodConfig(entry) {
     }
   }
   return config;
+}
+
+/**
+ * Preserve `environments.<env>.branch` across migration without inventing one.
+ * @param {Record<string, unknown>} entry
+ * @returns {{ branch?: string }}
+ */
+function copyEnvBranch(entry) {
+  const parsed = normalizeGitBranchName(entry.branch);
+  return parsed.ok ? { branch: parsed.name } : {};
 }
 
 /**
@@ -280,6 +294,7 @@ export function migrateConfigToEnvironments(raw) {
           enabled: entry.enabled !== false,
           method: String(entry.method),
           trigger: entry.trigger === 'push' ? 'push' : 'manual',
+          ...copyEnvBranch(entry),
           config: extractMethodConfig(entry),
         };
         continue;
@@ -292,6 +307,7 @@ export function migrateConfigToEnvironments(raw) {
         enabled,
         method,
         trigger: entry.trigger === 'push' ? 'push' : 'manual',
+        ...copyEnvBranch(entry),
         config: extractMethodConfig(entry),
       };
     }

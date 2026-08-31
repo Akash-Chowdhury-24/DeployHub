@@ -268,6 +268,32 @@ describe('init trigger defaults (single vs multi)', () => {
   test('buildServerEnvEntry still defaults to manual (env add safety)', () => {
     const entry = buildServerEnvEntry(baseAnswers, 'frontend', 'demo', null, null);
     expect(entry.trigger).toBe('manual');
+    expect(entry.branch).toBeUndefined();
+  });
+
+  test('buildServerEnvEntry stores trigger push + branch from prompt answers', () => {
+    const entry = buildServerEnvEntry(
+      { ...baseAnswers, trigger: 'push', branch: 'dev' },
+      'frontend',
+      'demo',
+      null,
+      null
+    );
+    expect(entry.trigger).toBe('push');
+    expect(entry.branch).toBe('dev');
+    expect(entry.config.branch).toBeUndefined();
+  });
+
+  test('buildServerEnvEntry does not store branch on manual trigger', () => {
+    const entry = buildServerEnvEntry(
+      { ...baseAnswers, trigger: 'manual', branch: 'dev' },
+      'frontend',
+      'demo',
+      null,
+      null
+    );
+    expect(entry.trigger).toBe('manual');
+    expect(entry.branch).toBeUndefined();
   });
 
   test('single-env init → applyInitTriggerDefaults sets trigger push', () => {

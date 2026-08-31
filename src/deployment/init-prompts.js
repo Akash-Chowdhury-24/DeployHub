@@ -1,6 +1,6 @@
 import inquirer from 'inquirer';
 import chalk from 'chalk';
-import { createEnvNamePromptValidate } from '../core/environments.js';
+import { createEnvNamePromptValidate, normalizeGitBranchName } from '../core/environments.js';
 import {
   suggestSshUser,
   listKubeContexts,
@@ -58,15 +58,18 @@ export function backendProcessNamePromptMessage(framework, projectName, projectT
  * @param {'frontend'|'backend'|'both'} projectType
  * @param {Record<string, unknown>|null} backendConfig
  * @param {{
-   *   envName?: string,
-   *   existingEnvNames?: string[],
-   *   deployType?: string,
-   *   nonInteractive?: boolean,
-   *   portDefault?: number,
-   * }} [options]
-   *   — when envName is set, skip the name prompt; existingEnvNames blocks in-session / config duplicates
-   *   — deployType skips the method list; nonInteractive uses defaults (requires deployType)
-   *   — portDefault seeds the docker "Default port" prompt (init / env add)
+ *   envName?: string,
+ *   existingEnvNames?: string[],
+ *   deployType?: string,
+ *   nonInteractive?: boolean,
+ *   portDefault?: number,
+ *   defaultTrigger?: 'push'|'manual',
+ *   defaultBranch?: string,
+ * }} [options]
+ *   — when envName is set, skip the name prompt; existingEnvNames blocks in-session / config duplicates
+ *   — deployType skips the method list; nonInteractive uses defaults (requires deployType)
+ *   — portDefault seeds the docker "Default port" prompt (init / env add)
+ *   — defaultTrigger / defaultBranch seed the trigger-type and branch prompts
  */
 export async function promptServerDeployment(
   projectName,
@@ -128,20 +131,79 @@ export async function promptServerDeployment(
 
   const deployType = base.deployType;
 
+  /** @type {Record<string, unknown>} */
+  let methodAnswers;
   if (deployType === 'kubernetes') {
-    return promptKubernetesDeployment(base, projectName, projectType, {
+    methodAnswers = await promptKubernetesDeployment(base, projectName, projectType, {
       existingEnvNames,
     });
-  }
-
-  if (deployType === 'docker') {
-    return promptDockerDeployment(base, projectName, projectType, {
+  } else if (deployType === 'docker') {
+    methodAnswers = await promptDockerDeployment(base, projectName, projectType, {
       backendConfig,
       portDefault: options.portDefault,
     });
+  } else {
+    methodAnswers = await promptSshBasedDeployment(
+      base,
+      projectName,
+      projectType,
+      backendConfig,
+      deployType
+    );
   }
 
-  return promptSshBasedDeployment(base, projectName, projectType, backendConfig, deployType);
+  const triggerMeta = await promptTriggerAndBranch(options);
+  return { ...methodAnswers, ...triggerMeta };
+}
+
+/**
+ * Trigger type + (when push) which branch fires this environment.
+ * `--yes` skips this entirely so existing non-interactive env add stays branch-less.
+ *
+ * @param {{ defaultTrigger?: 'push'|'manual', defaultBranch?: string }} [options]
+ */
+export async function promptTriggerAndBranch(options = {}) {
+  const defaultTrigger = options.defaultTrigger === 'push' ? 'push' : 'manual';
+  const defaultBranch =
+    typeof options.defaultBranch === 'string' && options.defaultBranch.trim()
+      ? options.defaultBranch.trim()
+      : 'main';
+
+  const { trigger } = await inquirer.prompt([
+    {
+      type: 'list',
+      name: 'trigger',
+      message: 'When should this environment deploy?',
+      choices: [
+        { name: 'On git push to a branch', value: 'push' },
+        { name: 'Manually (GitHub Actions → Run workflow)', value: 'manual' },
+      ],
+      default: defaultTrigger,
+    },
+  ]);
+
+  if (trigger !== 'push') {
+    return { trigger: 'manual' };
+  }
+
+  const { branch } = await inquirer.prompt([
+    {
+      type: 'input',
+      name: 'branch',
+      message: 'Which branch triggers this environment?',
+      default: defaultBranch,
+      validate: (input) => {
+        const result = normalizeGitBranchName(input);
+        return result.ok ? true : result.error;
+      },
+    },
+  ]);
+
+  const parsed = normalizeGitBranchName(branch);
+  return {
+    trigger: 'push',
+    branch: parsed.ok ? parsed.name : defaultBranch,
+  };
 }
 
 /**
@@ -658,12 +720,15 @@ export function buildServerEnvEntry(
     settings.kubeNamespace = deployAnswers.kubeNamespace || projectName;
     settings.dockerImageName = deployAnswers.dockerImageName || projectName;
     settings.dockerRegistryUrl = deployAnswers.dockerRegistryUrl || '';
-    return {
-      enabled: true,
-      method: 'kubernetes',
-      trigger: 'manual',
-      config: settings,
-    };
+    return withTriggerAndBranch(
+      {
+        enabled: true,
+        method: 'kubernetes',
+        trigger: 'manual',
+        config: settings,
+      },
+      deployAnswers
+    );
   }
 
   if (deployAnswers.deployType === 'docker') {
@@ -689,12 +754,15 @@ export function buildServerEnvEntry(
     if (Number.isInteger(n) && n >= 1 && n <= 65535) {
       settings.port = n;
     }
-    return {
-      enabled: true,
-      method: 'docker',
-      trigger: 'manual',
-      config: settings,
-    };
+    return withTriggerAndBranch(
+      {
+        enabled: true,
+        method: 'docker',
+        trigger: 'manual',
+        config: settings,
+      },
+      deployAnswers
+    );
   }
 
   settings.host = deployAnswers.host || '';
@@ -731,12 +799,34 @@ export function buildServerEnvEntry(
     settings.path = settings.deployPath;
   }
 
-  return {
-    enabled: true,
-    method: deployAnswers.deployType,
-    trigger: 'manual',
-    config: settings,
-  };
+  return withTriggerAndBranch(
+    {
+      enabled: true,
+      method: deployAnswers.deployType,
+      trigger: 'manual',
+      config: settings,
+    },
+    deployAnswers
+  );
+}
+
+/**
+ * Overlay prompt answers onto the env entry. `--yes` / missing answers keep
+ * trigger `manual` and omit `branch` (backward compatible).
+ *
+ * @param {{ enabled: boolean, method: string, trigger: string, config: Record<string, unknown>, branch?: string }} entry
+ * @param {Record<string, unknown>} deployAnswers
+ */
+function withTriggerAndBranch(entry, deployAnswers) {
+  const trigger = deployAnswers.trigger === 'push' ? 'push' : 'manual';
+  entry.trigger = trigger;
+  if (trigger === 'push' && deployAnswers.branch != null) {
+    const parsed = normalizeGitBranchName(deployAnswers.branch);
+    if (parsed.ok) entry.branch = parsed.name;
+  } else {
+    delete entry.branch;
+  }
+  return entry;
 }
 
 /**

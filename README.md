@@ -297,6 +297,10 @@ deployhub logs                       # last deployment logs
 
 `buildId` looks like `{semver}-{stamp}` where the stamp is a short git SHA when available, otherwise a CI run id, otherwise a high-resolution timestamp. When `DOCKER_IMAGE_TAG` is left unset, Docker and Kubernetes use that same `buildId` as the image tag — so you can correlate an artifact in storage with the image that was pushed.
 
+**Docker and Kubernetes image rollback:** DeployHub first looks for that `buildId` tag in the local Docker cache. If it is missing (the normal case on a GitHub Actions runner), it **pulls the image from the registry**. Rebuild-from-artifact is only tried if that pull also fails. Interpreted backends (Python, Node, PHP, Rails) still cannot rebuild from the artifact alone — keep `pipeline.docker` enabled so the original deploy pushed the tag. After a Docker rollback starts the container, DeployHub runs the same port-publish check as a normal deploy.
+
+For session notes on how these behaviors were proven, see `CONTEXT.md`.
+
 ### Rollback is scoped per environment
 
 Each environment maintains its own independent deploy history. When you roll back an environment, DeployHub only considers builds that were actually deployed **to that environment** — never builds deployed to a different environment, even if they're more recent or share the same project.
@@ -458,7 +462,7 @@ Best when you serve static files from your own VPS or cloud VM. DeployHub upload
 | Deploy type | You provide |
 |-------------|-------------|
 | **ssh** | `SSH_HOST`, `SSH_USER`, `SSH_KEY`, deploy path |
-| **docker** | Docker host access / image registry per your setup |
+| **docker** | Image registry; then **Where should the container run?** — local (this machine / CI), SSH (remote Linux — `SSH_HOST`, `SSH_USER`, `SSH_KEY_PATH` like **ec2**), or raw `DOCKER_HOST` |
 | **ec2** | SSH credentials to EC2 instance |
 | **azure-vm** / **gcp-vm** | SSH to VM |
 | **kubernetes** | Cluster credentials (via env / kubeconfig) |
@@ -523,6 +527,7 @@ Backends always deploy to a **self-hosted target** (SSH, Docker, EC2, Azure VM, 
 | Storage | At least one provider |
 | Configure deployment? | Yes for storage + deploy |
 | Deployment type | ssh (most common), docker, ec2, kubernetes, … |
+| Where should the container run? | Docker only: local / SSH (same `SSH_HOST`, `SSH_USER`, `SSH_KEY_PATH` as **ec2**) / raw `DOCKER_HOST` — see [Docker](#docker) |
 | App name | PM2 process name on server |
 | Health check URL | e.g. `https://api.example.com/health` |
 
@@ -700,6 +705,8 @@ The deploy workflow (`deployhub.yml`) installs the correct language runtime (Nod
 
 When an environment uses Kubernetes, the workflow installs `kubectl` and writes kubeconfig from secrets — but only when that run actually needs cluster access (push with a push-triggered k8s env, or workflow_dispatch / rollback targeting a k8s env, `all`, or blank). Plain pushes that only auto-deploy non-k8s environments (e.g. EC2 development) skip those steps.
 
+Map a git branch per environment during `init` / `env add` (`environments.<env>.branch`). The workflow then triggers only on those branches (for example `main` → production, `dev` → staging); other branches never run the pipeline. `workflow_dispatch` still lets you pick an environment by name. If you rename or delete a branch on GitHub, update `environments.<env>.branch` and run `deployhub sync-workflows` — doctor cannot see remote branch changes.
+
 To run a deploy manually: **Actions → DeployHub → Run workflow**.
 
 ### CI rollback (`deployhub-rollback.yml`)
@@ -711,6 +718,8 @@ To run a deploy manually: **Actions → DeployHub → Run workflow**.
 3. Run the workflow.
 
 Already-initialized projects that only have `deployhub.yml` will not get the rollback workflow from a re-run of unrelated commands — run **`deployhub sync-workflows`** once to regenerate both workflow files from your current `deployhub.config.json`, then commit and push.
+
+Docker and Kubernetes CI rollback **pulls** the restored `buildId` image from the registry when it is not cached on the runner (the usual case). Rebuild-from-artifact is only the last fallback — see [Rollback behavior](#rollback-behavior).
 
 ---
 
@@ -751,7 +760,7 @@ DeployHub supports six deployment targets. Pick based on what infrastructure you
 | Method | Best for | You need already |
 |--------|----------|------------------|
 | **ssh** | Any Linux VPS or bare-metal server you control | Server with SSH, key pair, app runtime |
-| **docker** | Containerized apps (Dockerfile or docker-compose.yml) | Docker locally or on a remote host |
+| **docker** | Containerized apps (Dockerfile or docker-compose.yml) | Docker locally, a remote Linux host via SSH, or a raw `DOCKER_HOST` URI |
 | **ec2** | AWS users with an existing EC2 instance | Running EC2 instance, security group, key pair |
 | **azure-vm** | Azure users with an existing virtual machine | Running Azure VM, NSG allowing SSH |
 | **gcp-vm** | GCP users with an existing Compute Engine VM | Running VM, firewall rule for SSH, metadata SSH key |
@@ -790,6 +799,14 @@ Install Nginx if it is not already present:
 - **Ubuntu / Debian:** `sudo apt install -y nginx`
 
 DeployHub detects whether the server uses Debian-style `sites-available` or RHEL-style `conf.d` at deploy time and writes a **uniquely named** config file for your project only — it does not overwrite unrelated Nginx configs.
+
+**SSH-mode Docker** (`remote.mode: "ssh"`) does not use the deploy-path or Nginx steps above. The remote Linux host needs **Docker installed** and the SSH user in the `docker` group:
+
+```bash
+sudo usermod -aG docker your-ssh-user
+```
+
+Then **reconnect** (group membership applies on the next login). `deployhub doctor` reports this if missing (it prints the exact `usermod` line). See [Docker](#docker) below.
 
 ### SSH
 
@@ -834,29 +851,41 @@ DeployHub detects whether the server uses Debian-style `sites-available` or RHEL
 
 ### Docker
 
-**Verification:** Real-world verified DEPLOY and ROLLBACK (local and CI).
+**Verification:** Real-world verified DEPLOY and ROLLBACK (local, SSH remote, and CI).
 
 **Prerequisites:**
-- [ ] Docker installed (`docker --version` works)
+- [ ] Docker installed (`docker --version` works) — on this machine / CI for **local** and **raw**; on the remote Linux host for **ssh**
 - [ ] Registry account if pushing private images
 - [ ] `docker-compose.yml` in project if you use multi-service Compose (not auto-generated)
+- [ ] **SSH mode only:** [one-time server setup](#one-time-server-setup-before-your-first-deploy) — Docker on the host and the SSH user in the `docker` group (`sudo usermod -aG docker <user>`, then reconnect)
+
+`init` and `env add` ask **Where should the container run?**
+
+| Choice | Mode | Meaning |
+|--------|------|---------|
+| Locally (this machine or CI runner) | `local` | Same machine as the CLI or GitHub Actions runner |
+| Remote Linux server via SSH (recommended for production) | `ssh` | DeployHub validates the connection and runs `docker pull`/`run` over SSH. Set `SSH_HOST`, `SSH_USER`, and `SSH_KEY_PATH` (same names as the **ec2** method) |
+| Advanced: raw Docker host URI | `raw` | You set `DOCKER_HOST` (`tcp://` or a custom `ssh://` setup you already manage) |
+
+**Port (SSH mode):** a published port is required (asked as **Default port** during init / `env add`). Deploy fails clearly if it is missing, rather than starting an unreachable container. `deployhub doctor` and `deployhub verify` check that the running container has the mapping.
 
 **What DeployHub automates:**
 - Starter `Dockerfile` at project root when none exists (framework-aware; skipped if you already have one)
 - `.dockerignore` when missing (never overwrites an existing one)
-- `.env.example` for image name, registry, remote `DOCKER_HOST`
-- Docker daemon connectivity test during `init`
+- `.env.example` for image name, registry, remote `DOCKER_HOST`, and SSH vars when `remote.mode` is `ssh`
+- Docker daemon connectivity test during `init` (local / raw); SSH key, host reachability, remote daemon, and `docker` group permission when mode is `ssh`
 - Reuses the image built in the pipeline `docker` stage when present; otherwise builds from the artifact
 - Registry login + push when `DOCKER_REGISTRY_USERNAME` / `DOCKER_REGISTRY_TOKEN` are set
 - Auto-generates a unique image tag per build when `DOCKER_IMAGE_TAG` is unset (git SHA → CI run id → timestamp)
-- `docker compose up` or build/push/run during deploy
+- `docker compose up` or build/push/run during deploy (`-p` for SSH-mode `docker run`)
 
 **After `init`:**
 1. Set `DOCKER_IMAGE_NAME` in `.env` (e.g. `myuser/myapp` for Docker Hub)
 2. For private registries (or any push): set `DOCKER_REGISTRY_USERNAME` and `DOCKER_REGISTRY_TOKEN`
 3. Leave `DOCKER_IMAGE_TAG` unset for a unique tag each build — set it only if you intentionally want a fixed tag
-4. For a remote Linux host, choose **Remote Linux server via SSH** at init (`remote.mode: "ssh"`) and set `SSH_HOST`, `SSH_USER`, `SSH_KEY_PATH` — DeployHub runs `docker pull`/`run` over node-ssh. Use `DOCKER_HOST` only for the advanced raw CLI transport (`tcp://` or a custom `ssh://` setup you already manage)
-5. Run `deployhub doctor`, then `git push origin main`
+4. For **ssh** mode: set `SSH_HOST`, `SSH_USER`, `SSH_KEY_PATH` (same names as the **ec2** method). Add GitHub Secrets `SSH_HOST`, `SSH_USER`, `SSH_KEY` for CI
+5. For **raw** mode only: set `DOCKER_HOST` to a URI you already manage (`tcp://` or custom `ssh://`)
+6. Run `deployhub doctor`, then `git push origin main`
 
 | Variable | Description | Example | Where to get it |
 |----------|-------------|---------|-----------------|
@@ -867,6 +896,7 @@ DeployHub detects whether the server uses Debian-style `sites-available` or RHEL
 | `DOCKER_REGISTRY_TOKEN` | Registry password/token | *(secret)* | Docker Hub / GHCR PAT |
 | `DOCKER_HOST` | Advanced raw daemon URI (optional) | `tcp://host:2376` | Only if you manage TLS/ssh:// yourself |
 | `SSH_HOST` / `SSH_USER` / `SSH_KEY_PATH` | Remote Linux via SSH (`remote.mode: ssh`) | `203.0.113.10` / `ubuntu` / `~/.ssh/key.pem` | Same names as EC2 |
+| `SSH_KEY` | Private key contents (CI only) | `-----BEGIN...` | Same key as `SSH_KEY_PATH` |
 
 ### AWS EC2
 
@@ -1013,7 +1043,7 @@ DeployHub detects whether the server uses Debian-style `sites-available` or RHEL
 - Cluster connectivity test during `init`
 - On deploy: registry login → reuse or build image → push (unique tag unless `DOCKER_IMAGE_TAG` is set) → ensure namespace exists (prompt locally / auto-create in CI) → `kubectl apply` → `kubectl set image` with the full resolved image ref → `kubectl rollout restart` when that ref is unchanged so pods pick up a new digest
 
-> **Limitation — interpreted backends (Node / Python / PHP / Rails) + rollback:** Kubernetes rollback forces a rebuild from the restored artifact when the exact `buildId` image is not already local. Those artifacts ship source/`composer.json` (etc.) but **not** installed deps (`vendor/`, `node_modules`, …), so DeployHub **refuses** with a clear error instead of a confusing Docker build failure. Successful rollback needs the restored image tag already present locally (or a prior `pipeline.docker` build that produced it). Same rule as standalone Docker deploy fallback.
+> **Limitation — interpreted backends (Node / Python / PHP / Rails) + rollback:** Kubernetes rollback uses the same image-resolution helper as Docker: local cache first, then **pull from the registry** (the normal case on a GitHub Actions runner). Rebuild-from-artifact is only the last fallback. Those artifacts ship source/`composer.json` (etc.) but **not** installed deps (`vendor/`, `node_modules`, …), so DeployHub **refuses** with a clear error instead of a confusing Docker build failure. Keep `pipeline.docker` so the original deploy pushed that tag. Same rule as standalone Docker.
 
 > **Limitation — multiple Kubernetes clusters:** A generated workflow writes **one** kubeconfig file per job. Multiple Kubernetes environments that target **different clusters** in the same workflow run are not yet fully supported (follow-up). Same-cluster multi-namespace / multi-env is fine.
 
@@ -1203,7 +1233,7 @@ Add these secrets in your repository (Settings → Secrets and variables → Act
 | `DOCKER_IMAGE_NAME`, `DOCKER_REGISTRY_USERNAME`, `DOCKER_REGISTRY_TOKEN`, `DOCKER_REGISTRY_URL`, `DOCKER_HOST` | Docker deployment (`DOCKER_IMAGE_TAG` optional) |
 | `KUBECONFIG`, `KUBE_CONTEXT`, `KUBE_NAMESPACE`, `DOCKER_IMAGE_NAME`, `DOCKER_REGISTRY_USERNAME`, `DOCKER_REGISTRY_TOKEN`, `DOCKER_REGISTRY_URL`, `DOCKER_IMAGE_TAG`, `KUBE_IMAGE_PULL_SECRET` | Kubernetes — **`KUBECONFIG` in GitHub Secrets must be the kubeconfig file contents (or base64), not a filesystem path**. `DOCKER_IMAGE_TAG`, `KUBE_NAMESPACE`, `DOCKER_REGISTRY_URL`, and `KUBE_IMAGE_PULL_SECRET` are optional |
 
-**Kubernetes rollback vs deploy — registry credentials:** Kubernetes **rollback** specifically **requires** `DOCKER_REGISTRY_USERNAME` and `DOCKER_REGISTRY_TOKEN`. Rollback rebuilds and must push a fresh image tagged with the restored `buildId`; without registry credentials it fails loudly and early (a rollback that cannot push can never succeed against a real cluster). This is stricter than a normal Kubernetes **deploy**, which may still allow local-only / no-push flows in some setups. If deploy worked without those secrets but rollback fails asking for them, that asymmetry is intentional.
+**Kubernetes rollback vs deploy — registry credentials:** Kubernetes **rollback** specifically **requires** `DOCKER_REGISTRY_USERNAME` and `DOCKER_REGISTRY_TOKEN`. Rollback pulls the restored `buildId` tag when it is not local, then must still push that image for the cluster; without registry credentials it fails loudly and early (a rollback that cannot push can never succeed against a real cluster). Rebuild-from-artifact is only the last fallback (interpreted backends refuse). This is stricter than a normal Kubernetes **deploy**, which may still allow local-only / no-push flows in some setups. If deploy worked without those secrets but rollback fails asking for them, that asymmetry is intentional.
 
 See [Deployment method guides](#deployment-method-guides) for full per-method variable tables with examples.
 

@@ -28,7 +28,6 @@ import {
   promptServerDeployment,
   buildServerEnvEntry,
   getDockerEnvSecrets,
-  applyInitTriggerDefaults,
   formatMultiEnvTriggerReminder,
   SSH_BASED,
 } from '../deployment/init-prompts.js';
@@ -37,6 +36,11 @@ import {
   formatSecretChecklistLine,
 } from '../deployment/deployment-env.js';
 import { confirmValueIfContainsSpaces, normalizeInitHealthCheckUrl } from '../deployment/init-helpers.js';
+import {
+  getWorkflowPushBranches,
+  formatBranchMappingSummary,
+  getEnvTrigger,
+} from '../core/environments.js';
 
 const FRONTEND_CHOICES = [
   { name: 'React', value: 'react' },
@@ -383,6 +387,8 @@ export function registerInitCommand(program) {
               ...(opts.envName ? { envName: opts.envName } : {}),
               existingEnvNames: Object.keys(environments),
               portDefault: singleConfig?.port ?? backendConfig?.port,
+              defaultTrigger: deploy.length === 0 ? 'push' : 'manual',
+              defaultBranch: 'main',
             }
           );
           primaryDeployType = deployAnswers.deployType;
@@ -463,7 +469,8 @@ export function registerInitCommand(program) {
         defaultEnvironment = picked.defaultEnvironment;
       }
 
-      applyInitTriggerDefaults(environments, deploy, defaultEnvironment);
+      // Trigger + branch come from per-env prompts (default: first env push/main,
+      // additional envs manual). Do not clobber those answers here.
 
       const version = await getProjectVersion(cwd);
       let hasDocker =
@@ -585,7 +592,14 @@ export function registerInitCommand(program) {
       console.log('  • .env.example');
       console.log('');
 
-      if (deploy.length >= 2 && defaultEnvironment) {
+      if (deploy.length > 0) {
+        const mapped = getWorkflowPushBranches(config);
+        console.log(chalk.cyan(formatBranchMappingSummary(mapped)));
+        console.log('');
+      }
+
+      const hasManualEnv = deploy.some((name) => getEnvTrigger(environments[name]) === 'manual');
+      if (deploy.length >= 2 && defaultEnvironment && hasManualEnv) {
         console.log(
           chalk.yellow(
             formatMultiEnvTriggerReminder(String(defaultEnvironment), deploy)

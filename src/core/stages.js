@@ -21,12 +21,17 @@ import {
   resolveDefaultEnvironmentName,
   isEnvEnabled,
   getEnvTrigger,
+  configHasBranchMapping,
+  getEnvBranch,
+  resolvePushBranchName,
 } from './environments.js';
 
 /**
  * Environments to deploy during `deployhub build` (pipeline.deploy).
  * - Local: default environment only (promote elsewhere via `deploy --env`).
- * - GitHub Actions push: every enabled env with trigger "push".
+ * - GitHub Actions push: every enabled env with trigger "push" whose `branch`
+ *   matches the push ref. Configs with no `branch` on any environment keep
+ *   today's behavior (all push-triggered envs, regardless of ref).
  * - workflow_dispatch: none here (explicit deploy step handles --env).
  *
  * Separate from workflow secret injection: CI may inject secrets for all
@@ -41,8 +46,16 @@ export function pipelineDeployTargets(config, env = process.env) {
     return [];
   }
   if (env.GITHUB_ACTIONS === 'true' || env.GITHUB_ACTIONS === '1') {
-    return Object.entries(config.environments || {})
-      .filter(([, entry]) => isEnvEnabled(entry) && getEnvTrigger(entry) === 'push')
+    const pushEnvs = Object.entries(config.environments || {}).filter(
+      ([, entry]) => isEnvEnabled(entry) && getEnvTrigger(entry) === 'push'
+    );
+    if (!configHasBranchMapping(config)) {
+      return pushEnvs.map(([name]) => name);
+    }
+    const branch = resolvePushBranchName(env);
+    if (!branch) return [];
+    return pushEnvs
+      .filter(([, entry]) => (getEnvBranch(entry) || 'main') === branch)
       .map(([name]) => name);
   }
   const def = resolveDefaultEnvironmentName(config);

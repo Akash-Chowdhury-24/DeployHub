@@ -13,7 +13,7 @@ import {
 import { loadEnvArtifactHistory } from '../storage/index.js';
 import { testProvider } from '../storage/index.js';
 import { getDeploymentProvider } from '../deployment/index.js';
-import { PROVIDER_ENV_MAP, STORAGE_PROVIDER_IDS, getRollbackWorkflowDoctorCheck, getWorkflowDriftDoctorChecks } from '../utils/github-actions.js';
+import { PROVIDER_ENV_MAP, STORAGE_PROVIDER_IDS, getRollbackWorkflowDoctorCheck, getWorkflowDriftDoctorChecks, getBranchMappingDoctorCheck } from '../utils/github-actions.js';
 import { printDoctorFooter } from '../utils/author.js';
 import { createLocalProvider } from '../storage/providers/local.js';
 import {
@@ -1404,6 +1404,11 @@ export function registerDoctorCommand(program) {
       }
 
       if (config) {
+        const branchCheck = getBranchMappingDoctorCheck(config);
+        if (branchCheck) {
+          informationalCheckNames.add(branchCheck.name);
+          results.push(await runCheck(branchCheck.name, async () => branchCheck));
+        }
         const driftChecks = await getWorkflowDriftDoctorChecks(cwd, config);
         for (const check of driftChecks) {
           results.push(await runCheck(check.name, async () => check));
