@@ -264,4 +264,46 @@ describe('docker provider remote modes', () => {
       false
     );
   });
+
+  test('ssh mode runs preDeploy hooks before docker stop, postDeploy after inspect', async () => {
+    const provider = createDockerProvider(
+      dockerConfig({
+        remote: { mode: 'ssh' },
+        host: '203.0.113.10',
+        user: 'ubuntu',
+        dockerImageName: 'org/app',
+        port: 80,
+        hooks: {
+          preDeploy: [{ command: 'echo PRE_HOOK' }],
+          postDeploy: [{ command: 'echo POST_HOOK', continueOnError: true }],
+        },
+      }),
+      'production',
+      { SSH_KEY: '-----BEGIN PRIVATE KEY-----\nk\n-----END PRIVATE KEY-----\n' }
+    );
+    await provider.deploy('/tmp/artifact');
+    const preIdx = execCommands.findIndex((c) => c === 'echo PRE_HOOK');
+    const stopIdx = execCommands.findIndex((c) => c.startsWith('docker stop '));
+    const inspectIdx = execCommands.findIndex((c) => c.includes('docker inspect'));
+    const postIdx = execCommands.findIndex((c) => c === 'echo POST_HOOK');
+    expect(preIdx).toBeGreaterThanOrEqual(0);
+    expect(stopIdx).toBeGreaterThan(preIdx);
+    expect(postIdx).toBeGreaterThan(inspectIdx);
+  });
+
+  test('local mode with hooks configured fails instead of silently ignoring them', async () => {
+    const provider = createDockerProvider(
+      dockerConfig({
+        remote: { mode: 'local' },
+        dockerImageName: 'org/app',
+        hooks: { preDeploy: [{ command: 'echo no' }] },
+      }),
+      'production',
+      {}
+    );
+    await expect(provider.deploy('/tmp/artifact')).rejects.toThrow(/not supported/);
+    expect(mockExeca.mock.calls.some((c) => c[0] === 'docker' && c[1]?.[0] === 'run')).toBe(
+      false
+    );
+  });
 });

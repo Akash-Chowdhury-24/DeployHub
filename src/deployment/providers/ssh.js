@@ -2,6 +2,7 @@ import path from 'path';
 import { createLogger } from '../../logger/index.js';
 import { getEnvSettings } from '../../core/config.js';
 import { createSshExecSession } from '../ssh-connection.js';
+import { runDeployHooks } from '../hooks.js';
 import {
   getNginxSitesAvailablePath,
   getNginxSitesEnabledPath,
@@ -540,8 +541,11 @@ export function createSshProvider(config, envName, env = process.env) {
 
   /**
    * @param {string} artifactDir
+   * @param {{ isRollback?: boolean }} [options]
    */
-  async function deploy(artifactDir) {
+  async function deploy(artifactDir, options = {}) {
+    const isRollback = options.isRollback === true;
+    const preStage = isRollback ? 'rollback' : 'preDeploy';
     const ssh = await connect();
     const projectType = config.projectType || 'frontend';
 
@@ -555,33 +559,40 @@ export function createSshProvider(config, envName, env = process.env) {
 
       if (projectType === 'both') {
         const remoteStaging = `/tmp/deployhub-staging-${Date.now()}`;
-        await exec(ssh, `mkdir -p ${sh(remoteStaging)}`);
-        await exec(ssh, `unzip -o ${sh(remoteZip)} -d ${sh(remoteStaging)}`);
+        try {
+          await exec(ssh, `mkdir -p ${sh(remoteStaging)}`);
+          await exec(ssh, `unzip -o ${sh(remoteZip)} -d ${sh(remoteStaging)}`);
 
-        await ensureWritableDeployDir(ssh, frontendDeployPath);
-        await exec(
-          ssh,
-          `rsync -a ${sh(remoteStaging)}/ ${sh(frontendDeployPath)}/ --exclude backend || cp -r ${sh(remoteStaging)}/* ${sh(frontendDeployPath)}/`
-        );
+          await runDeployHooks({ session, ssh, settings, stage: preStage });
 
-        await ensureWritableDeployDir(ssh, backendDeployPath);
-        await exec(
-          ssh,
-          `rsync -a ${sh(remoteStaging)}/backend/ ${sh(backendDeployPath)}/ || cp -r ${sh(remoteStaging)}/backend/* ${sh(backendDeployPath)}/`
-        );
+          await ensureWritableDeployDir(ssh, frontendDeployPath);
+          await exec(
+            ssh,
+            `rsync -a ${sh(remoteStaging)}/ ${sh(frontendDeployPath)}/ --exclude backend || cp -r ${sh(remoteStaging)}/* ${sh(frontendDeployPath)}/`
+          );
 
-        if (await remoteFileExists(ssh, `${frontendDeployPath}/nginx.conf`)) {
-          await setupNginx(ssh, frontendDeployPath);
+          await ensureWritableDeployDir(ssh, backendDeployPath);
+          await exec(
+            ssh,
+            `rsync -a ${sh(remoteStaging)}/backend/ ${sh(backendDeployPath)}/ || cp -r ${sh(remoteStaging)}/backend/* ${sh(backendDeployPath)}/`
+          );
+
+          if (await remoteFileExists(ssh, `${frontendDeployPath}/nginx.conf`)) {
+            await setupNginx(ssh, frontendDeployPath);
+          }
+
+          await runBackendStartSequence(ssh, backendDeployPath);
+        } finally {
+          await exec(ssh, `rm -rf ${sh(remoteStaging)}`).catch(() => {});
         }
-
-        await runBackendStartSequence(ssh, backendDeployPath);
-        await exec(ssh, `rm -rf ${sh(remoteStaging)}`);
       } else if (projectType === 'backend') {
         log.info(`Backend deploy path: ${deployPath}`);
+        await runDeployHooks({ session, ssh, settings, stage: preStage });
         await extractToPath(ssh, remoteZip, deployPath);
         await runBackendStartSequence(ssh, deployPath);
       } else {
         log.info(`Frontend deploy path: ${deployPath}`);
+        await runDeployHooks({ session, ssh, settings, stage: preStage });
         await extractToPath(ssh, remoteZip, deployPath);
 
         const framework = config.framework || 'react';
@@ -590,6 +601,10 @@ export function createSshProvider(config, envName, env = process.env) {
         } else if (await remoteFileExists(ssh, `${deployPath}/nginx.conf`)) {
           await setupNginx(ssh, deployPath);
         }
+      }
+
+      if (!isRollback) {
+        await runDeployHooks({ session, ssh, settings, stage: 'postDeploy' });
       }
 
       await exec(ssh, `rm -f ${sh(remoteZip)}`);
@@ -609,7 +624,7 @@ export function createSshProvider(config, envName, env = process.env) {
   }
 
   async function rollback(artifactDir, _meta) {
-    await deploy(artifactDir);
+    await deploy(artifactDir, { isRollback: true });
   }
 
   async function healthCheck() {

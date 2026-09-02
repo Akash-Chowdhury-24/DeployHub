@@ -29,6 +29,12 @@ const SideConfigSchema = z.object({
   port: z.number().optional(),
 });
 
+const HookCommandSchema = z.object({
+  command: z.string().min(1),
+  continueOnError: z.boolean().optional(),
+  timeoutMs: z.number().positive().optional(),
+});
+
 /** Method-specific non-secret settings (host, paths, namespace, image name, etc.). */
 const MethodConfigSchema = z
   .object({
@@ -66,6 +72,17 @@ const MethodConfigSchema = z
       })
       .optional(),
     healthCheckUrl: z.string().optional(),
+    /**
+     * Remote shell hooks for SSH-based methods (ssh / ec2 / azure-vm / gcp-vm /
+     * docker remote.mode ssh). Rejected on kubernetes and docker local/raw.
+     */
+    hooks: z
+      .object({
+        preDeploy: z.array(HookCommandSchema).optional(),
+        postDeploy: z.array(HookCommandSchema).optional(),
+        rollback: z.array(HookCommandSchema).optional(),
+      })
+      .optional(),
     appName: z.string().optional(),
     framework: z.string().optional(),
     port: z.number().optional(),

@@ -753,6 +753,48 @@ You can enable **multiple providers** — DeployHub uploads to all of them in pa
 
 ---
 
+## Custom deploy hooks
+
+SSH-based deploys (`ssh`, `ec2`, `azure-vm`, `gcp-vm`, and `docker` with `remote.mode: "ssh"`) can run your own commands on the remote host as part of deploy and rollback. Use them for migrations, cache clearing, or a notification — anything you currently SSH in to do by hand.
+
+| Hook | When it runs | Typical use | Failure default |
+|------|----------------|-------------|-----------------|
+| `preDeploy` | After the artifact/image is ready and the host is reachable, **before** the running app/container is replaced or started | DB migrations that must finish before new code runs | Abort the deploy (`continueOnError: false`) |
+| `postDeploy` | After the app is up (SSH start / docker-ssh port publish) | Cache warm, Slack ping, non-critical cleanup | Continue (`continueOnError: true` when added via `init` / `env add`) |
+| `rollback` | During `deployhub rollback`, in the same slot as `preDeploy` — before the restored version takes over | Your own down-migration. DeployHub does not reverse migrations for you | Abort the rollback (`continueOnError: false`) |
+
+Commands run over the **existing** SSH session (not a second connection). Kubernetes and Docker `local` / `raw` modes do not support hooks (no persistent remote shell session); configuring them there fails loudly at deploy/rollback.
+
+On docker-ssh, `postDeploy` runs **after** the port-publish inspect check (`docker inspect` confirms `0.0.0.0:<port>->`). A hook that curls the app's published port therefore sees a container DeployHub already treated as published. If that inspect fails, `postDeploy` does not run.
+
+Hook `command` strings are raw remote shell — there is **no** `{{buildId}}` / `{{containerName}}` / `{{port}}` / `{{environment}}` substitution. Hardcode values per environment (or read them from the remote environment). Extra Docker environments use an env-scoped container name (`{project}-{env}`; the first/grandfathered env stays `{project}`), so a hook that `docker exec myapp …` on staging will miss `myapp-staging`.
+
+Hook commands that look like they embed a secret (`--password`, `-p secret`, `TOKEN=…`) are not printed in full in the `$ …` log line. This is a best-effort check, not encryption: hook stdout/stderr is still logged, so prefer env vars on the remote host over inline secrets.
+
+`init` and `env add` ask optionally — default is skip. Example:
+
+```json
+"environments": {
+  "production": {
+    "config": {
+      "hooks": {
+        "preDeploy": [
+          { "command": "docker exec myapp python manage.py migrate", "continueOnError": false, "timeoutMs": 60000 }
+        ],
+        "postDeploy": [
+          { "command": "curl -s https://hooks.slack.com/services/T000/B000/xxx -d deployed", "continueOnError": true }
+        ],
+        "rollback": [
+          { "command": "docker exec myapp python manage.py migrate 0042_previous", "continueOnError": false }
+        ]
+      }
+    }
+  }
+}
+```
+
+---
+
 ## Choosing a deployment method
 
 DeployHub supports six deployment targets. Pick based on what infrastructure you already have — DeployHub does not provision servers, VMs, or clusters for you.

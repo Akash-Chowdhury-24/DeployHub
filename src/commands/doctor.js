@@ -53,6 +53,7 @@ import {
   pickPhpFpmUnitName,
   preferredPhpFpmUnitName,
 } from '../utils/php-fpm.js';
+import { getHooksDoctorChecks } from '../deployment/hooks.js';
 
 /**
  * @typedef {{ name: string, pass: boolean, message: string }} CheckResult
@@ -1408,6 +1409,10 @@ export function registerDoctorCommand(program) {
         if (branchCheck) {
           informationalCheckNames.add(branchCheck.name);
           results.push(await runCheck(branchCheck.name, async () => branchCheck));
+        }
+        for (const hookCheck of getHooksDoctorChecks(config)) {
+          informationalCheckNames.add(hookCheck.name);
+          results.push(await runCheck(hookCheck.name, async () => hookCheck));
         }
         const driftChecks = await getWorkflowDriftDoctorChecks(cwd, config);
         for (const check of driftChecks) {

@@ -8,7 +8,9 @@ import { createLogger } from '../logger/index.js';
 import {
   getEnabledEnvironmentNames,
   getEnvMethod,
+  getEnvSettings,
 } from '../core/environments.js';
+import { assertHooksAllowed } from './hooks.js';
 import { applyEnvSecretOverlay } from './deployment-env.js';
 import { recordEnvDeployment } from '../storage/index.js';
 import { buildArtifactRemoteKey } from '../utils/build-id.js';
@@ -81,6 +83,7 @@ export async function deployToAll(config, artifactDir, envNames) {
     }
 
     const method = getEnvMethod(envConfig);
+    assertHooksAllowed(method, getEnvSettings(envConfig), envName);
     const provider = getDeploymentProvider(method, config, envName);
     log.info(`Deploying to ${envName} (${method})...`);
     await provider.deploy(artifactDir);
@@ -128,7 +131,9 @@ export async function rollbackAll(config, artifactDir, envNames, meta) {
   const targets = envNames || getEnabledEnvironmentNames(config);
   for (const envName of targets) {
     const envConfig = config.environments[envName];
-    const provider = getDeploymentProvider(getEnvMethod(envConfig), config, envName);
+    const method = getEnvMethod(envConfig);
+    assertHooksAllowed(method, getEnvSettings(envConfig), envName);
+    const provider = getDeploymentProvider(method, config, envName);
     await provider.rollback(artifactDir, meta);
   }
 }

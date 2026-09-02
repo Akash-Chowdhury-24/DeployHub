@@ -5,6 +5,7 @@ import { resolveDockerImageRefForTag } from '../../utils/docker-image.js';
 import { resolveDockerContainerName } from '../../utils/docker-container-name.js';
 import { getEnvSettings, mergeMethodSettingsIntoEnv } from '../../core/environments.js';
 import { createSshExecSession } from '../ssh-connection.js';
+import { assertHooksAllowed, runDeployHooks } from '../hooks.js';
 import { resolveDockerRemoteMode } from '../../utils/docker-remote-mode.js';
 import {
   resolveDockerSshTarget,
@@ -63,9 +64,10 @@ export function createDockerProvider(config, envName, env = process.env) {
 
   /**
    * @param {string} artifactDir
-   * @param {{ fullImage?: string, skipImageReuse?: boolean }} [options]
+   * @param {{ fullImage?: string, skipImageReuse?: boolean, isRollback?: boolean }} [options]
    */
   async function deploy(artifactDir, options = {}) {
+    assertHooksAllowed('docker', settings, envName);
     const imageRef = options.fullImage || fullImage;
     log.info(`Deploying via Docker (image: ${imageRef})...`);
 
@@ -88,7 +90,9 @@ export function createDockerProvider(config, envName, env = process.env) {
       if (publishPort == null) {
         throw new Error(formatDockerSshPortRequired(envName));
       }
-      await deployOverSsh(imageRef, publishPort);
+      await deployOverSsh(imageRef, publishPort, {
+        isRollback: options.isRollback === true,
+      });
       log.success('Docker deployment complete');
       return;
     }
@@ -151,8 +155,10 @@ export function createDockerProvider(config, envName, env = process.env) {
   /**
    * @param {string} imageRef
    * @param {number} port
+   * @param {{ isRollback?: boolean }} [options]
    */
-  async function deployOverSsh(imageRef, port) {
+  async function deployOverSsh(imageRef, port, options = {}) {
+    const isRollback = options.isRollback === true;
     const cmds = buildRemoteDockerCommands(imageRef, containerName, {}, { publishPort: port });
     const session = sshSession();
     const ssh = await session.connect();
@@ -170,6 +176,13 @@ export function createDockerProvider(config, envName, env = process.env) {
           'No DOCKER_REGISTRY_USERNAME/TOKEN — remote docker pull requires a public image or one already present on the host.'
         );
       }
+
+      await runDeployHooks({
+        session,
+        ssh,
+        settings,
+        stage: isRollback ? 'rollback' : 'preDeploy',
+      });
 
       await session.exec(ssh, cmds.stop);
       await session.exec(ssh, cmds.rm);
@@ -191,6 +204,10 @@ export function createDockerProvider(config, envName, env = process.env) {
       }
       if (verdict.reason === 'published') {
         log.info(verdict.message);
+      }
+
+      if (!isRollback) {
+        await runDeployHooks({ session, ssh, settings, stage: 'postDeploy' });
       }
     } finally {
       ssh.dispose();
@@ -220,6 +237,7 @@ export function createDockerProvider(config, envName, env = process.env) {
     await deploy(artifactDir, {
       fullImage: rollbackImage,
       skipImageReuse: true,
+      isRollback: true,
     });
   }
 

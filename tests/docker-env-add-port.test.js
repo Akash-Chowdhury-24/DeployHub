@@ -63,6 +63,9 @@ describe('env add docker Default port prompt', () => {
     expect(entry.config.port).toBe(8000);
     expect(entry.trigger).toBe('manual');
     expect(entry.branch).toBeUndefined();
+    expect(prompted.find((q) => q.name === 'addPreDeploy')).toBeUndefined();
+    expect(prompted.find((q) => q.name === 'addPostDeploy')).toBeUndefined();
+    expect(prompted.find((q) => q.name === 'addRollback')).toBeUndefined();
   });
 
   test('defaultTrigger push asks which branch triggers this environment', async () => {

@@ -153,7 +153,130 @@ export async function promptServerDeployment(
   }
 
   const triggerMeta = await promptTriggerAndBranch(options);
-  return { ...methodAnswers, ...triggerMeta };
+  const hookMeta = await promptDeployHooksIfSupported(deployType, methodAnswers);
+  return { ...methodAnswers, ...triggerMeta, ...hookMeta };
+}
+
+/**
+ * Optional pre/post/rollback commands. Skipped unless the method has a
+ * DeployHub-managed SSH session (ssh / ec2 / azure-vm / gcp-vm / docker-ssh).
+ *
+ * @param {string} deployType
+ * @param {Record<string, unknown>} methodAnswers
+ */
+async function promptDeployHooksIfSupported(deployType, methodAnswers) {
+  const sshBased = SSH_BASED.includes(deployType);
+  const dockerSsh = deployType === 'docker' && methodAnswers.remoteMode === 'ssh';
+  if (!sshBased && !dockerSsh) {
+    return {};
+  }
+  return promptDeployHooks();
+}
+
+/**
+ * @returns {Promise<{ hooks?: Record<string, { command: string, continueOnError: boolean }[]> }>}
+ */
+export async function promptDeployHooks() {
+  /** @type {Record<string, { command: string, continueOnError: boolean }[]>} */
+  const hooks = {};
+
+  const { addPreDeploy } = await inquirer.prompt([
+    {
+      type: 'confirm',
+      name: 'addPreDeploy',
+      message: 'Add a pre-deploy command? (e.g. run migrations)',
+      default: false,
+    },
+  ]);
+  if (addPreDeploy) {
+    const { command, abortOnFailure } = await inquirer.prompt([
+      {
+        type: 'input',
+        name: 'command',
+        message: 'Pre-deploy command:',
+        validate: (input) =>
+          String(input || '').trim() ? true : 'Enter a command to run on the remote host.',
+      },
+      {
+        type: 'confirm',
+        name: 'abortOnFailure',
+        message: 'Should a failure abort the deploy?',
+        default: true,
+      },
+    ]);
+    hooks.preDeploy = [
+      {
+        command: String(command).trim(),
+        continueOnError: abortOnFailure === false,
+      },
+    ];
+  }
+
+  const { addPostDeploy } = await inquirer.prompt([
+    {
+      type: 'confirm',
+      name: 'addPostDeploy',
+      message: 'Add a post-deploy command? (e.g. clear cache, notify)',
+      default: false,
+    },
+  ]);
+  if (addPostDeploy) {
+    const { command, abortOnFailure } = await inquirer.prompt([
+      {
+        type: 'input',
+        name: 'command',
+        message: 'Post-deploy command:',
+        validate: (input) =>
+          String(input || '').trim() ? true : 'Enter a command to run on the remote host.',
+      },
+      {
+        type: 'confirm',
+        name: 'abortOnFailure',
+        message: 'Should a failure abort the deploy?',
+        default: false,
+      },
+    ]);
+    hooks.postDeploy = [
+      {
+        command: String(command).trim(),
+        continueOnError: abortOnFailure !== true,
+      },
+    ];
+  }
+
+  const { addRollback } = await inquirer.prompt([
+    {
+      type: 'confirm',
+      name: 'addRollback',
+      message: 'Add a rollback command? (e.g. reverse migration)',
+      default: false,
+    },
+  ]);
+  if (addRollback) {
+    const { command, abortOnFailure } = await inquirer.prompt([
+      {
+        type: 'input',
+        name: 'command',
+        message: 'Rollback command:',
+        validate: (input) =>
+          String(input || '').trim() ? true : 'Enter a command to run on the remote host.',
+      },
+      {
+        type: 'confirm',
+        name: 'abortOnFailure',
+        message: 'Should a failure abort the rollback?',
+        default: true,
+      },
+    ]);
+    hooks.rollback = [
+      {
+        command: String(command).trim(),
+        continueOnError: abortOnFailure === false,
+      },
+    ];
+  }
+
+  return Object.keys(hooks).length > 0 ? { hooks } : {};
 }
 
 /**
@@ -754,6 +877,7 @@ export function buildServerEnvEntry(
     if (Number.isInteger(n) && n >= 1 && n <= 65535) {
       settings.port = n;
     }
+    attachHooksFromAnswers(settings, deployAnswers);
     return withTriggerAndBranch(
       {
         enabled: true,
@@ -799,6 +923,7 @@ export function buildServerEnvEntry(
     settings.path = settings.deployPath;
   }
 
+  attachHooksFromAnswers(settings, deployAnswers);
   return withTriggerAndBranch(
     {
       enabled: true,
@@ -808,6 +933,20 @@ export function buildServerEnvEntry(
     },
     deployAnswers
   );
+}
+
+/**
+ * Copy optional hook answers onto the env method config.
+ * @param {Record<string, unknown>} settings
+ * @param {Record<string, unknown>} deployAnswers
+ */
+function attachHooksFromAnswers(settings, deployAnswers) {
+  const raw = deployAnswers && deployAnswers.hooks;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return;
+  const hooks = /** @type {Record<string, unknown>} */ (raw);
+  if (hooks.preDeploy || hooks.postDeploy || hooks.rollback) {
+    settings.hooks = hooks;
+  }
 }
 
 /**

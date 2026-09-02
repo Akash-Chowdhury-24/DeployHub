@@ -74,11 +74,13 @@ export function createSshExecSession(opts) {
   /**
    * @param {import('node-ssh').NodeSSH} ssh
    * @param {string} command
-   * @param {{ timeoutMs?: number }} [execOpts]
+   * @param {{ timeoutMs?: number, logCommand?: boolean }} [execOpts]
    */
   async function runCommand(ssh, command, execOpts = {}) {
     const timeoutMs = execOpts.timeoutMs ?? defaultExecTimeoutMs;
-    log.info(`$ ${command}`);
+    if (execOpts.logCommand !== false) {
+      log.info(`$ ${command}`);
+    }
 
     /** @type {ReturnType<typeof setTimeout> | undefined} */
     let timer;
@@ -106,7 +108,7 @@ export function createSshExecSession(opts) {
   /**
    * @param {import('node-ssh').NodeSSH} ssh
    * @param {string} command
-   * @param {{ timeoutMs?: number }} [execOpts]
+   * @param {{ timeoutMs?: number, logCommand?: boolean }} [execOpts]
    */
   async function exec(ssh, command, execOpts = {}) {
     const result = await runCommand(ssh, command, execOpts);
@@ -129,7 +131,7 @@ export function createSshExecSession(opts) {
    *
    * @param {import('node-ssh').NodeSSH} ssh
    * @param {string} command
-   * @param {{ timeoutMs?: number }} [execOpts]
+   * @param {{ timeoutMs?: number, logCommand?: boolean }} [execOpts]
    */
   async function execUnchecked(ssh, command, execOpts = {}) {
     return runCommand(ssh, command, execOpts);
